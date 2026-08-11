@@ -68,6 +68,16 @@ export function ReportsView() {
           <span className="k">Смета</span>
           <strong>{money(bomTotal)}</strong>
         </div>
+        <div>
+          <span className="k">Прочность</span>
+          <strong className={`sev-${model.structural.summary.worst}`}>
+            {model.structural.summary.fail
+              ? `${model.structural.summary.fail} критич.`
+              : model.structural.summary.warn
+                ? `${model.structural.summary.warn} предупр.`
+                : 'OK'}
+          </strong>
+        </div>
       </div>
 
       {tab === 'frame' && (
@@ -154,6 +164,110 @@ export function ReportsView() {
                 </tbody>
               </table>
             </div>
+          </section>
+        </div>
+      )}
+
+      {tab === 'structural' && (
+        <div className="report-grid">
+          <section className="card-plain wide">
+            <h3>Проверка прочности и прогибов (СП 31-105)</h3>
+            <p className="muted">
+              Пролёты по прил. Б, прогиб балок ≤ L/360, нагрузки укрупнённо (перекрытие 2,4 + 0,8 кПа).
+              Не заменяет полный расчёт по СП 20 / СП 64 — приближает модель к рабочей проверке конструктора.
+            </p>
+            <div className={`struct-banner sev-${model.structural.summary.worst}`}>
+              {model.structural.summary.worst === 'fail'
+                ? `Есть критические замечания: ${model.structural.summary.fail}`
+                : model.structural.summary.worst === 'warn'
+                  ? `Критических нет, предупреждений: ${model.structural.summary.warn}`
+                  : 'Все проверки в допуске'}
+              <span className="muted-inline">
+                {' '}
+                · OK {model.structural.summary.ok} · warn {model.structural.summary.warn} · fail{' '}
+                {model.structural.summary.fail}
+              </span>
+            </div>
+            <div className="check-list">
+              {model.structural.checks.map((c) => (
+                <article key={c.id} className={`check-item sev-${c.severity}`}>
+                  <header>
+                    <span className={`badge sev-${c.severity}`}>
+                      {c.severity === 'ok' ? 'OK' : c.severity === 'warn' ? '!' : '×'}
+                    </span>
+                    <h4>{c.title}</h4>
+                    <span className="check-cat">{c.category}</span>
+                  </header>
+                  <p>{c.detail}</p>
+                  {(c.actual || c.limit) && (
+                    <p className="check-metrics">
+                      {c.actual && (
+                        <>
+                          факт: <b>{c.actual}</b>{' '}
+                        </>
+                      )}
+                      {c.limit && (
+                        <>
+                          лимит: <b>{c.limit}</b>
+                        </>
+                      )}
+                    </p>
+                  )}
+                  {c.suggestion && <p className="check-suggest">{c.suggestion}</p>}
+                </article>
+              ))}
+            </div>
+          </section>
+
+          <section className="card-plain wide">
+            <h3>Расчётные усилия и прогибы элементов</h3>
+            <div className="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Элемент</th>
+                    <th>Пролёт</th>
+                    <th>Сечение</th>
+                    <th>Шаг</th>
+                    <th>q, кН/м</th>
+                    <th>M, кН·м</th>
+                    <th>Q, кН</th>
+                    <th>δ, мм</th>
+                    <th>L/360</th>
+                    <th>Таблица</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {model.structural.members.map((m) => (
+                    <tr key={m.id} className={!m.okSpanTable || !m.okDeflection ? 'row-fail' : ''}>
+                      <td>{m.label}</td>
+                      <td>{m.spanM.toFixed(2)} м</td>
+                      <td>
+                        {m.sectionMm.width}×{m.sectionMm.depth}
+                      </td>
+                      <td>{m.spacingMm}</td>
+                      <td>{m.lineLoadKNpm.toFixed(2)}</td>
+                      <td>{m.momentKNm.toFixed(2)}</td>
+                      <td>{m.shearKN.toFixed(2)}</td>
+                      <td>{m.deflectionMm.toFixed(1)}</td>
+                      <td>{m.deflectionLimitMm.toFixed(1)}</td>
+                      <td>
+                        {m.okSpanTable ? 'OK' : `>${m.maxSpanTableM.toFixed(2)} м`}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </section>
+
+          <section className="card-plain wide">
+            <h3>Допущения расчёта</h3>
+            <ul className="assumptions">
+              {model.structural.assumptions.map((a) => (
+                <li key={a}>{a}</li>
+              ))}
+            </ul>
           </section>
         </div>
       )}

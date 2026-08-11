@@ -63,7 +63,7 @@ interface EditorState {
   draftStart: Point | null;
   scale: number;
   offset: Point;
-  tab: 'editor' | 'frame' | 'cutting' | 'estimate' | 'thermal';
+  tab: 'editor' | 'frame' | 'structural' | 'cutting' | 'estimate' | 'thermal';
   setTool: (t: Tool) => void;
   setWallKind: (k: WallKind) => void;
   setTab: (t: EditorState['tab']) => void;

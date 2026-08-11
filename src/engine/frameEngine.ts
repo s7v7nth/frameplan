@@ -28,6 +28,7 @@ import {
   prepareWallSkipFlags,
   renderFrameProjections,
 } from './frameGeometry';
+import { computeStructuralReport } from './structuralChecks';
 
 function addSheet(sheets: SheetItem[], partial: Omit<SheetItem, 'id'>) {
   sheets.push({ id: uid('sheet'), ...partial });
@@ -485,6 +486,7 @@ export function generateFrameModel(project: Project): FrameModel {
   const cutting = nestCutting(lumber, project.settings.wasteFactor);
   const bom = buildBom(project, lumber, sheets, cutting);
   const heatLoss = computeHeatLoss(project);
+  const structural = computeStructuralReport(project);
   const projections = renderFrameProjections(project, members);
 
   const footprint = polygonAreaFromExterior(
@@ -510,6 +512,12 @@ export function generateFrameModel(project: Project): FrameModel {
     cutting,
     bom,
     heatLoss,
+    structural: {
+      checks: structural.checks,
+      members: structural.members,
+      summary: structural.summary,
+      assumptions: structural.assumptions,
+    },
     projections,
     summary: {
       footprintM2: footprint,

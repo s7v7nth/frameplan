@@ -184,6 +184,33 @@ export function SidePanel() {
           </select>
         </label>
         <label className="field">
+          <span>Шаг балок, мм</span>
+          <select
+            value={project.settings.joistSpacingMm}
+            onChange={(e) =>
+              updateSettings({ joistSpacingMm: Number(e.target.value) as 400 | 600 })
+            }
+          >
+            <option value={400}>400</option>
+            <option value={600}>600</option>
+          </select>
+        </label>
+        <label className="field">
+          <span>Сечение балок, мм</span>
+          <select
+            value={`${project.settings.joistSectionMm.width}x${project.settings.joistSectionMm.depth}`}
+            onChange={(e) => {
+              const [w, d] = e.target.value.split('x').map(Number);
+              updateSettings({ joistSectionMm: { width: w, depth: d } });
+            }}
+          >
+            <option value="50x150">50×150</option>
+            <option value="50x200">50×200</option>
+            <option value="50x250">50×250</option>
+            <option value="50x300">50×300</option>
+          </select>
+        </label>
+        <label className="field">
           <span>Высота этажа, мм</span>
           <input
             type="number"

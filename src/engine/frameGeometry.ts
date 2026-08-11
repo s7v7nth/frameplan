@@ -15,6 +15,10 @@ import type {
   ProjectSettings,
   Wall,
 } from '../domain/types';
+import { analyzeFloorBays } from './floorLayout';
+import { headerHeightMm } from './spanTables';
+
+export { headerHeightMm };
 
 function openingsOnWall(openings: Opening[], wallId: string): Opening[] {
   return openings
@@ -74,25 +78,6 @@ function plateSegment(
 }
 
 type Occ = { s0: number; s1: number };
-
-/**
- * Header board height (on edge) from SP 31-105 app. B.13 (rigid sheathing).
- * Approximates tables for roof+attic [+one floor], wall load ~1.5–2.0 kPa.
- * Metric stock 50×150 / 200 / 250 / 300 ≈ 2×(38×140 / 184 / 235 / 286).
- */
-export function headerHeightMm(clearWMm: number, floors: number): number {
-  const spanM = clearWMm / 1000;
-  if (floors >= 2) {
-    if (spanM <= 1.5) return 150;
-    if (spanM <= 1.9) return 200;
-    if (spanM <= 2.3) return 250;
-    return 300;
-  }
-  if (spanM <= 1.9) return 150;
-  if (spanM <= 2.3) return 200;
-  if (spanM <= 2.8) return 250;
-  return 300;
-}
 
 /**
  * Wall framing per SP 31-105-2002 §7.2 platform framing.
@@ -515,28 +500,20 @@ export function buildFloorMembers(
   members: FrameMember[],
   lumber: LumberPiece[],
 ) {
-  const refWalls =
-    floor === 0
-      ? project.walls.filter((w) => w.floor === 0 && w.kind === 'exterior')
-      : project.walls.filter((w) => w.floor === 1 && w.kind === 'exterior').length
-        ? project.walls.filter((w) => w.floor === 1 && w.kind === 'exterior')
-        : project.walls.filter((w) => w.floor === 0 && w.kind === 'exterior');
-  if (refWalls.length === 0) return;
+  const layout = analyzeFloorBays(project, floor);
+  const { minX, minY, maxX, maxY } = layout.bounds;
+  if (layout.supportCount < 2 || layout.maxBayM <= 0) return;
 
-  const pts = refWalls.flatMap((w) => [w.a, w.b]);
-  const minX = Math.min(...pts.map((p) => p.x));
-  const minY = Math.min(...pts.map((p) => p.y));
-  const maxX = Math.max(...pts.map((p) => p.x));
-  const maxY = Math.max(...pts.map((p) => p.y));
-  const spanX = maxX - minX;
-  const spanY = maxY - minY;
   const joist = project.settings.joistSectionMm;
   const spacing = project.settings.joistSpacingMm;
-  const spanShort = spanX <= spanY;
-  const span = spanShort ? spanX : spanY;
+  const refWalls = project.walls.filter(
+    (w) =>
+      w.kind === 'exterior' &&
+      (w.floor === floor || (floor === 1 && !project.walls.some((x) => x.floor === 1 && x.kind === 'exterior'))),
+  );
 
   if (floor === 0) {
-    for (const wall of refWalls) {
+    for (const wall of refWalls.filter((w) => w.floor === 0)) {
       const L = Math.round(wallLength(wall));
       // SP 6.2.8.4 — sill (опорная доска) not less than 38×88; use 50×150 stock
       pushMember(members, lumber, {
@@ -551,91 +528,98 @@ export function buildFloorMembers(
     }
   }
 
-  if (spanShort) {
-    pushMember(members, lumber, {
-      kind: 'rim_joist',
-      label: 'Обвязочная балка',
-      sectionMm: joist,
-      lengthMm: Math.round(spanY),
-      floor,
-      plan: { x1: minX, y1: minY, x2: minX, y2: maxY },
-    });
-    pushMember(members, lumber, {
-      kind: 'rim_joist',
-      label: 'Обвязочная балка',
-      sectionMm: joist,
-      lengthMm: Math.round(spanY),
-      floor,
-      plan: { x1: maxX, y1: minY, x2: maxX, y2: maxY },
-    });
-    pushMember(members, lumber, {
-      kind: 'rim_joist',
-      label: 'Торцевая обвязка',
-      sectionMm: joist,
-      lengthMm: Math.round(span),
-      floor,
-      plan: { x1: minX, y1: minY, x2: maxX, y2: minY },
-    });
-    pushMember(members, lumber, {
-      kind: 'rim_joist',
-      label: 'Торцевая обвязка',
-      sectionMm: joist,
-      lengthMm: Math.round(span),
-      floor,
-      plan: { x1: minX, y1: maxY, x2: maxX, y2: maxY },
-    });
-    for (let y = minY; y <= maxY + 1; y += spacing) {
+  // Rim joists around footprint
+  pushMember(members, lumber, {
+    kind: 'rim_joist',
+    label: 'Обвязочная балка',
+    sectionMm: joist,
+    lengthMm: Math.round(maxY - minY),
+    floor,
+    plan: { x1: minX, y1: minY, x2: minX, y2: maxY },
+  });
+  pushMember(members, lumber, {
+    kind: 'rim_joist',
+    label: 'Обвязочная балка',
+    sectionMm: joist,
+    lengthMm: Math.round(maxY - minY),
+    floor,
+    plan: { x1: maxX, y1: minY, x2: maxX, y2: maxY },
+  });
+  pushMember(members, lumber, {
+    kind: 'rim_joist',
+    label: 'Торцевая обвязка',
+    sectionMm: joist,
+    lengthMm: Math.round(maxX - minX),
+    floor,
+    plan: { x1: minX, y1: minY, x2: maxX, y2: minY },
+  });
+  pushMember(members, lumber, {
+    kind: 'rim_joist',
+    label: 'Торцевая обвязка',
+    sectionMm: joist,
+    lengthMm: Math.round(maxX - minX),
+    floor,
+    plan: { x1: minX, y1: maxY, x2: maxX, y2: maxY },
+  });
+
+  // Intermediate bearing rim along interior supports
+  for (let i = 1; i < layout.supportsMm.length - 1; i++) {
+    const s = layout.supportsMm[i];
+    if (layout.spanAxis === 'x') {
       pushMember(members, lumber, {
-        kind: 'joist',
-        label: floor === 0 ? 'Балка черного пола' : 'Балка перекрытия',
+        kind: 'rim_joist',
+        label: 'Опорная балка на внутренней стене',
         sectionMm: joist,
-        lengthMm: Math.round(span),
+        lengthMm: Math.round(maxY - minY),
         floor,
-        plan: { x1: minX, y1: y, x2: maxX, y2: y },
+        plan: { x1: s, y1: minY, x2: s, y2: maxY },
+      });
+    } else {
+      pushMember(members, lumber, {
+        kind: 'rim_joist',
+        label: 'Опорная балка на внутренней стене',
+        sectionMm: joist,
+        lengthMm: Math.round(maxX - minX),
+        floor,
+        plan: { x1: minX, y1: s, x2: maxX, y2: s },
       });
     }
+  }
+
+  const label = floor === 0 ? 'Балка черного пола' : 'Балка перекрытия';
+
+  if (layout.spanAxis === 'x') {
+    // Joists span X within each bay; laid out along Y
+    for (let i = 0; i < layout.supportsMm.length - 1; i++) {
+      const x0 = layout.supportsMm[i];
+      const x1 = layout.supportsMm[i + 1];
+      const span = Math.round(x1 - x0);
+      for (let y = minY; y <= maxY + 1; y += spacing) {
+        pushMember(members, lumber, {
+          kind: 'joist',
+          label: `${label} (пролёт ${(span / 1000).toFixed(2)} м)`,
+          sectionMm: joist,
+          lengthMm: span,
+          floor,
+          plan: { x1: x0, y1: y, x2: x1, y2: y },
+        });
+      }
+    }
   } else {
-    pushMember(members, lumber, {
-      kind: 'rim_joist',
-      label: 'Обвязочная балка',
-      sectionMm: joist,
-      lengthMm: Math.round(spanX),
-      floor,
-      plan: { x1: minX, y1: minY, x2: maxX, y2: minY },
-    });
-    pushMember(members, lumber, {
-      kind: 'rim_joist',
-      label: 'Обвязочная балка',
-      sectionMm: joist,
-      lengthMm: Math.round(spanX),
-      floor,
-      plan: { x1: minX, y1: maxY, x2: maxX, y2: maxY },
-    });
-    pushMember(members, lumber, {
-      kind: 'rim_joist',
-      label: 'Торцевая обвязка',
-      sectionMm: joist,
-      lengthMm: Math.round(span),
-      floor,
-      plan: { x1: minX, y1: minY, x2: minX, y2: maxY },
-    });
-    pushMember(members, lumber, {
-      kind: 'rim_joist',
-      label: 'Торцевая обвязка',
-      sectionMm: joist,
-      lengthMm: Math.round(span),
-      floor,
-      plan: { x1: maxX, y1: minY, x2: maxX, y2: maxY },
-    });
-    for (let x = minX; x <= maxX + 1; x += spacing) {
-      pushMember(members, lumber, {
-        kind: 'joist',
-        label: floor === 0 ? 'Балка черного пола' : 'Балка перекрытия',
-        sectionMm: joist,
-        lengthMm: Math.round(span),
-        floor,
-        plan: { x1: x, y1: minY, x2: x, y2: maxY },
-      });
+    for (let i = 0; i < layout.supportsMm.length - 1; i++) {
+      const y0 = layout.supportsMm[i];
+      const y1 = layout.supportsMm[i + 1];
+      const span = Math.round(y1 - y0);
+      for (let x = minX; x <= maxX + 1; x += spacing) {
+        pushMember(members, lumber, {
+          kind: 'joist',
+          label: `${label} (пролёт ${(span / 1000).toFixed(2)} м)`,
+          sectionMm: joist,
+          lengthMm: span,
+          floor,
+          plan: { x1: x, y1: y0, x2: x, y2: y1 },
+        });
+      }
     }
   }
 }

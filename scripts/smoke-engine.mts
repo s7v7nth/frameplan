@@ -143,3 +143,87 @@ if (
   console.error('Smoke failed', report);
   process.exit(1);
 }
+
+// —— Structural: 8 m house WITHOUT bearing partition must FAIL floor span ——
+const openSpan: Project = {
+  ...project,
+  id: 't-open',
+  settings: {
+    ...project.settings,
+    joistSectionMm: { width: 50, depth: 200 },
+    joistSpacingMm: 600,
+  },
+  walls: [
+    { id: 'a1', a: { x: 0, y: 0 }, b: { x: 8000, y: 0 }, thickness: 200, kind: 'exterior', height: 2700, floor: 0 },
+    { id: 'a2', a: { x: 8000, y: 0 }, b: { x: 8000, y: 6000 }, thickness: 200, kind: 'exterior', height: 2700, floor: 0 },
+    { id: 'a3', a: { x: 8000, y: 6000 }, b: { x: 0, y: 6000 }, thickness: 200, kind: 'exterior', height: 2700, floor: 0 },
+    { id: 'a4', a: { x: 0, y: 6000 }, b: { x: 0, y: 0 }, thickness: 200, kind: 'exterior', height: 2700, floor: 0 },
+  ],
+  openings: [],
+};
+const openModel = generateFrameModel(openSpan);
+const openFail = openModel.structural.summary.fail > 0;
+const openJoistFail = openModel.structural.checks.some(
+  (c) => c.id.startsWith('floor_span') && c.severity === 'fail',
+);
+const openMaxBay = openModel.structural.members.find((m) => m.id.startsWith('joist'))?.spanM ?? 0;
+
+// —— Structural: same house WITH full mid wall + 50×250 → floor span OK ——
+const supported: Project = {
+  ...openSpan,
+  id: 't-supported',
+  settings: {
+    ...openSpan.settings,
+    joistSectionMm: { width: 50, depth: 250 },
+    joistSpacingMm: 600,
+  },
+  walls: [
+    ...openSpan.walls,
+    {
+      id: 'mid',
+      a: { x: 4000, y: 0 },
+      b: { x: 4000, y: 6000 },
+      thickness: 120,
+      kind: 'interior',
+      height: 2700,
+      floor: 0,
+    },
+  ],
+};
+const supportedModel = generateFrameModel(supported);
+const supportedJoistOk = supportedModel.structural.checks.some(
+  (c) => c.id.startsWith('floor_span') && c.severity === 'ok',
+);
+const supportedBay = supportedModel.structural.members.find((m) => m.id.startsWith('joist'))?.spanM ?? 0;
+const hasSplitJoists = supportedModel.members.some(
+  (m) => m.kind === 'joist' && m.lengthMm <= 4100,
+);
+const hasForces = supportedModel.structural.members.every(
+  (m) => m.momentKNm > 0 && m.deflectionLimitMm > 0,
+);
+
+const structReport = {
+  openFail,
+  openJoistFail,
+  openMaxBay,
+  supportedJoistOk,
+  supportedBay,
+  hasSplitJoists,
+  hasForces,
+  supportedWorst: supportedModel.structural.summary.worst,
+};
+
+console.log('structural', JSON.stringify(structReport, null, 2));
+
+if (
+  !openFail ||
+  !openJoistFail ||
+  openMaxBay < 5.5 ||
+  !supportedJoistOk ||
+  supportedBay > 4.1 ||
+  !hasSplitJoists ||
+  !hasForces
+) {
+  console.error('Structural smoke failed', structReport);
+  process.exit(1);
+}
