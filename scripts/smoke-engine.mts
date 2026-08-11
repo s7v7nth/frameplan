@@ -10,8 +10,9 @@ const project: Project = {
   updatedAt: new Date().toISOString(),
   settings: {
     ...DEFAULT_SETTINGS,
-    floors: 2,
+    floors: 1,
     roofType: 'gable',
+    studSpacingMm: 600,
     insulation: { ...DEFAULT_SETTINGS.insulation },
     climate: { ...DEFAULT_SETTINGS.climate },
     studSectionMm: { ...DEFAULT_SETTINGS.studSectionMm },
@@ -22,10 +23,6 @@ const project: Project = {
     { id: 'w2', a: { x: 6000, y: 0 }, b: { x: 6000, y: 6000 }, thickness: 200, kind: 'exterior', height: 2700, floor: 0 },
     { id: 'w3', a: { x: 6000, y: 6000 }, b: { x: 0, y: 6000 }, thickness: 200, kind: 'exterior', height: 2700, floor: 0 },
     { id: 'w4', a: { x: 0, y: 6000 }, b: { x: 0, y: 0 }, thickness: 200, kind: 'exterior', height: 2700, floor: 0 },
-    { id: 'w5', a: { x: 0, y: 0 }, b: { x: 6000, y: 0 }, thickness: 200, kind: 'exterior', height: 2700, floor: 1 },
-    { id: 'w6', a: { x: 6000, y: 0 }, b: { x: 6000, y: 6000 }, thickness: 200, kind: 'exterior', height: 2700, floor: 1 },
-    { id: 'w7', a: { x: 6000, y: 6000 }, b: { x: 0, y: 6000 }, thickness: 200, kind: 'exterior', height: 2700, floor: 1 },
-    { id: 'w8', a: { x: 0, y: 6000 }, b: { x: 0, y: 0 }, thickness: 200, kind: 'exterior', height: 2700, floor: 1 },
   ],
   openings: [
     { id: 'o1', wallId: 'w1', type: 'window', offset: 1500, width: 1200, height: 1400, sillHeight: 900 },
@@ -35,23 +32,35 @@ const project: Project = {
 };
 
 const model = generateFrameModel(project);
-console.log(
-  JSON.stringify(
-    {
-      footprint: model.summary.footprintM2,
-      studs: model.summary.studCount,
-      lumberM3: Number(model.summary.lumberVolumeM3.toFixed(3)),
-      bomLines: model.bom.length,
-      cuttingGroups: model.cutting.length,
-      heatKw: Number((model.heatLoss.totalW / 1000).toFixed(2)),
-      hasSill: model.lumber.some((l) => l.category === 'sill'),
-      hasRafters: model.lumber.some((l) => l.category === 'rafter'),
-    },
-    null,
-    2,
-  ),
-);
+const kinds = model.members.reduce<Record<string, number>>((acc, m) => {
+  acc[m.kind] = (acc[m.kind] ?? 0) + 1;
+  return acc;
+}, {});
 
-if (model.summary.footprintM2 < 30 || model.summary.studCount < 20 || !model.lumber.some((l) => l.category === 'sill')) {
+const report = {
+  footprint: model.summary.footprintM2,
+  studs: kinds.stud ?? 0,
+  kings: kinds.king_stud ?? 0,
+  jacks: kinds.jack_stud ?? 0,
+  headers: kinds.header ?? 0,
+  cripples: kinds.cripple ?? 0,
+  joists: kinds.joist ?? 0,
+  rafters: kinds.rafter ?? 0,
+  wallElevations: model.projections.wallElevations.length,
+  hasStudInPlanSvg: model.projections.planSvg.includes('circle'),
+  hasHeaderInElev: model.projections.wallElevations.some((w) => w.svg.includes('#b45309')),
+};
+
+console.log(JSON.stringify(report, null, 2));
+
+if (
+  report.studs < 20 ||
+  report.kings < 4 ||
+  report.jacks < 4 ||
+  report.headers < 4 ||
+  !report.hasStudInPlanSvg ||
+  !report.hasHeaderInElev
+) {
+  console.error('Frame geometry smoke failed');
   process.exit(1);
 }

@@ -9,14 +9,35 @@ function money(n: number) {
   }).format(n);
 }
 
+const KIND_RU: Record<string, string> = {
+  sill: 'лежень',
+  bottom_plate: 'нижняя обвязка',
+  top_plate: 'верхняя обвязка',
+  stud: 'стойка',
+  king_stud: 'королевская стойка',
+  jack_stud: 'джек',
+  header: 'перемычка',
+  cripple: 'коротыш',
+  joist: 'балка',
+  rim_joist: 'обвязочная балка',
+  rafter: 'стропило',
+  ridge: 'конёк',
+  blocking: 'блокировка',
+};
+
 export function ReportsView() {
   const tab = useEditorStore((s) => s.tab);
   const model = useFrameModel();
 
-  const bomTotal = useMemo(
-    () => model.bom.reduce((s, l) => s + l.total, 0),
-    [model.bom],
-  );
+  const bomTotal = useMemo(() => model.bom.reduce((s, l) => s + l.total, 0), [model.bom]);
+
+  const counts = useMemo(() => {
+    const map = new Map<string, number>();
+    for (const m of model.members) {
+      map.set(m.kind, (map.get(m.kind) ?? 0) + 1);
+    }
+    return [...map.entries()].sort((a, b) => b[1] - a[1]);
+  }, [model.members]);
 
   if (tab === 'editor') return null;
 
@@ -32,7 +53,7 @@ export function ReportsView() {
           <strong>{model.summary.heatedAreaM2.toFixed(1)} м²</strong>
         </div>
         <div>
-          <span className="k">Стойки</span>
+          <span className="k">Стойки/джеки</span>
           <strong>{model.summary.studCount}</strong>
         </div>
         <div>
@@ -51,36 +72,60 @@ export function ReportsView() {
 
       {tab === 'frame' && (
         <div className="report-grid">
-          <section className="card-plain">
-            <h3>План каркаса</h3>
+          <section className="card-plain wide">
+            <h3>План каркаса (стойки, джеки, хедеры, балки)</h3>
             <div
-              className="svg-frame"
+              className="svg-frame tall"
               dangerouslySetInnerHTML={{ __html: model.projections.planSvg }}
             />
+            <div className="kind-chips">
+              {counts.map(([kind, n]) => (
+                <span key={kind} className="chip">
+                  {KIND_RU[kind] ?? kind}: <b>{n}</b>
+                </span>
+              ))}
+            </div>
           </section>
+
           <section className="card-plain">
-            <h3>Фасад</h3>
+            <h3>Фасад — каркас</h3>
             <div
-              className="svg-frame"
+              className="svg-frame tall"
               dangerouslySetInnerHTML={{ __html: model.projections.elevationFrontSvg }}
             />
           </section>
           <section className="card-plain">
-            <h3>Торец</h3>
+            <h3>Торец — каркас</h3>
             <div
-              className="svg-frame"
+              className="svg-frame tall"
               dangerouslySetInnerHTML={{ __html: model.projections.elevationSideSvg }}
             />
           </section>
-          <section className="card-plain">
-            <h3>Кровля</h3>
+          <section className="card-plain wide">
+            <h3>План стропил</h3>
             <div
-              className="svg-frame"
+              className="svg-frame tall"
               dangerouslySetInnerHTML={{ __html: model.projections.roofSvg }}
             />
           </section>
+
           <section className="card-plain wide">
-            <h3>Элементы каркаса (СП 31-105-2002)</h3>
+            <h3>Развёртки стен (узлы проёмов: king / jack / header / cripple)</h3>
+            <div className="elev-gallery">
+              {model.projections.wallElevations.map((w) => (
+                <div key={w.wallId} className="elev-item">
+                  <div className="elev-title">{w.title}</div>
+                  <div
+                    className="svg-frame"
+                    dangerouslySetInnerHTML={{ __html: w.svg }}
+                  />
+                </div>
+              ))}
+            </div>
+          </section>
+
+          <section className="card-plain wide">
+            <h3>Ведомость элементов каркаса (СП 31-105-2002)</h3>
             <div className="table-wrap">
               <table>
                 <thead>
@@ -96,7 +141,7 @@ export function ReportsView() {
                 <tbody>
                   {model.lumber.map((p) => (
                     <tr key={p.id}>
-                      <td>{p.category}</td>
+                      <td>{KIND_RU[p.category] ?? p.category}</td>
                       <td>{p.label}</td>
                       <td>
                         {p.sectionMm.width}×{p.sectionMm.depth}
@@ -191,10 +236,6 @@ export function ReportsView() {
                 </tfoot>
               </table>
             </div>
-            <p className="muted">
-              Укрупнённые цены справочные. Состав: обвязка фундамента, черный пол, стены, перекрытие,
-              кровля, обшивка, утеплитель, крепёж — по правилам платформенного каркаса СП 31-105-2002.
-            </p>
           </section>
         </div>
       )}

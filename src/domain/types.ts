@@ -143,6 +143,20 @@ export interface LumberPiece {
   qty: number;
 }
 
+/** Geometric framing member for drawings (plan + elevation). */
+export interface FrameMember {
+  id: string;
+  kind: LumberPiece['category'];
+  label: string;
+  sectionMm: { width: number; depth: number };
+  lengthMm: number;
+  floor: FloorLevel | 'roof' | 'foundation';
+  wallId?: string;
+  plan?: { x1: number; y1: number; x2: number; y2: number };
+  planMark?: { x: number; y: number; angle: number };
+  elev?: { s0: number; s1: number; z0: number; z1: number };
+}
+
 export interface SheetItem {
   id: string;
   category: 'subfloor' | 'wall_sheathing' | 'roof_sheathing' | 'interior' | 'cladding';
@@ -195,6 +209,7 @@ export interface HeatLossResult {
 
 export interface FrameModel {
   lumber: LumberPiece[];
+  members: FrameMember[];
   sheets: SheetItem[];
   cutting: CuttingStock[];
   bom: BomLine[];
@@ -204,6 +219,7 @@ export interface FrameModel {
     elevationFrontSvg: string;
     elevationSideSvg: string;
     roofSvg: string;
+    wallElevations: { wallId: string; title: string; svg: string }[];
   };
   summary: {
     footprintM2: number;

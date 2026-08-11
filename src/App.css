@@ -303,7 +303,39 @@ select {
   background-size: 16px 16px;
   border-radius: 12px;
   border: 1px solid var(--line);
-  overflow: hidden;
+  overflow: auto;
+}
+
+.svg-frame.tall {
+  height: 420px;
+}
+
+.kind-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.chip {
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 4px 10px;
+  font-size: 0.8rem;
+  background: #fff;
+  color: var(--muted);
+}
+
+.elev-gallery {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 12px;
+}
+
+.elev-title {
+  font-size: 0.85rem;
+  color: var(--muted);
+  margin-bottom: 6px;
 }
 
 .table-wrap {
