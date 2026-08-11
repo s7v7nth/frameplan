@@ -5,8 +5,9 @@ import {
   wallAngle,
   wallLength,
   pointAlongWall,
-  snapPoint,
   projectPointOnSegment,
+  magnetSnapPoint,
+  WALL_MAGNET_MM,
 } from '../domain/geometry';
 import { useEditorStore } from '../store/editorStore';
 
@@ -16,6 +17,7 @@ export function PlanCanvas() {
   const [size, setSize] = useState({ width: 800, height: 600 });
   const [spacePan, setSpacePan] = useState(false);
   const [hover, setHover] = useState<{ x: number; y: number } | null>(null);
+  const [magnetAt, setMagnetAt] = useState<{ x: number; y: number } | null>(null);
   const {
     project,
     tool,
@@ -33,6 +35,7 @@ export function PlanCanvas() {
     moveWallBy,
     moveOpening,
     updateOpening,
+    previewEndpointSnap,
     setOffset,
     setScale,
   } = useEditorStore();
@@ -124,7 +127,19 @@ export function PlanCanvas() {
         onMouseMove={(e) => {
           const stage = e.target.getStage();
           const pos = stage?.getPointerPosition();
-          if (pos) setHover(toWorld(pos.x, pos.y));
+          if (!pos) return;
+          const world = toWorld(pos.x, pos.y);
+          if (tool === 'wall') {
+            const hit = magnetSnapPoint(
+              world,
+              project.walls.filter((w) => w.floor === project.activeFloor),
+              { freeWhenFar: true },
+            );
+            setHover(hit.kind === 'grid' ? world : hit.point);
+            setMagnetAt(hit.kind === 'grid' ? null : hit.point);
+          } else {
+            setHover(world);
+          }
         }}
         onWheel={(e) => {
           e.evt.preventDefault();
@@ -243,10 +258,15 @@ export function PlanCanvas() {
                         }}
                         onDragMove={(e) => {
                           e.cancelBubble = true;
-                          const np = snapPoint({ x: e.target.x(), y: e.target.y() });
-                          e.target.position(np);
-                          moveWallEndpoint(wall.id, end, np);
+                          const raw = { x: e.target.x(), y: e.target.y() };
+                          const snapped = previewEndpointSnap(wall.id, end, raw);
+                          const magnetized =
+                            Math.hypot(snapped.x - raw.x, snapped.y - raw.y) > 0.5;
+                          e.target.position(snapped);
+                          setMagnetAt(magnetized ? snapped : null);
+                          moveWallEndpoint(wall.id, end, raw);
                         }}
+                        onDragEnd={() => setMagnetAt(null)}
                       />
                     );
                   })}
@@ -396,6 +416,21 @@ export function PlanCanvas() {
             </Group>
           ))}
 
+          {magnetAt && (
+            <Group listening={false}>
+              <Circle
+                x={magnetAt.x}
+                y={magnetAt.y}
+                radius={WALL_MAGNET_MM}
+                stroke="#c45c26"
+                strokeWidth={20}
+                dash={[80, 60]}
+                opacity={0.45}
+              />
+              <Circle x={magnetAt.x} y={magnetAt.y} radius={70} fill="#c45c26" opacity={0.9} />
+            </Group>
+          )}
+
           {draftStart && hover && tool === 'wall' && (
             <Line
               points={[draftStart.x, draftStart.y, hover.x, hover.y]}
@@ -411,8 +446,8 @@ export function PlanCanvas() {
         </Layer>
       </Stage>
       <div className="canvas-hint">
-        Стена/окно/дверь — клик · Выбор: тянуть стену и оранжевые ручки · Проём: синяя = сдвиг,
-        зелёные = ширина · Space — панорама · Delete — удалить
+        Концы стен магнитятся к другим стенам (~{WALL_MAGNET_MM} мм) · Выбор: тянуть ручки · Space —
+        панорама · Delete — удалить
       </div>
     </div>
   );

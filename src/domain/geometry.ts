@@ -29,6 +29,72 @@ export function snapPoint(p: Point, grid = 100): Point {
   };
 }
 
+/** Default magnet radius in mm — endpoint snaps when within this distance. */
+export const WALL_MAGNET_MM = 250;
+
+export type MagnetHit = {
+  point: Point;
+  kind: 'endpoint' | 'segment' | 'grid';
+  wallId?: string;
+  strength: number; // distance before snap
+};
+
+/**
+ * Magnetic snap for wall endpoints:
+ * 1) other wall endpoints (strongest)
+ * 2) projection onto other wall segments
+ * 3) grid (weakest, always available)
+ */
+export function magnetSnapPoint(
+  p: Point,
+  walls: Wall[],
+  opts: {
+    ignoreWallId?: string;
+    magnetMm?: number;
+    grid?: number;
+    /** Prefer free movement — only magnet, no forced grid when far */
+    freeWhenFar?: boolean;
+  } = {},
+): MagnetHit {
+  const magnetMm = opts.magnetMm ?? WALL_MAGNET_MM;
+  const grid = opts.grid ?? 100;
+
+  let bestEnd: MagnetHit | null = null;
+  let bestSeg: MagnetHit | null = null;
+
+  for (const wall of walls) {
+    if (opts.ignoreWallId && wall.id === opts.ignoreWallId) continue;
+
+    for (const end of [wall.a, wall.b]) {
+      const d = dist(p, end);
+      if (d <= magnetMm && (!bestEnd || d < bestEnd.strength)) {
+        bestEnd = { point: { ...end }, kind: 'endpoint', wallId: wall.id, strength: d };
+      }
+    }
+
+    const hit = projectPointOnSegment(p, wall.a, wall.b);
+    if (hit.dist <= magnetMm && (!bestSeg || hit.dist < bestSeg.strength)) {
+      bestSeg = {
+        point: { ...hit.point },
+        kind: 'segment',
+        wallId: wall.id,
+        strength: hit.dist,
+      };
+    }
+  }
+
+  // Endpoints win over mid-segment when similarly close
+  if (bestEnd && (!bestSeg || bestEnd.strength <= bestSeg.strength + 40)) {
+    return bestEnd;
+  }
+  if (bestSeg) return bestSeg;
+
+  if (opts.freeWhenFar) {
+    return { point: { x: p.x, y: p.y }, kind: 'grid', strength: Infinity };
+  }
+  return { point: snapPoint(p, grid), kind: 'grid', strength: Infinity };
+}
+
 export function projectPointOnSegment(p: Point, a: Point, b: Point): { point: Point; t: number; dist: number } {
   const dx = b.x - a.x;
   const dy = b.y - a.y;

@@ -1,7 +1,7 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 import { DEFAULT_SETTINGS } from '../domain/materials';
-import { projectPointOnSegment, snapPoint, uid, wallLength } from '../domain/geometry';
+import { projectPointOnSegment, snapPoint, uid, wallLength, magnetSnapPoint } from '../domain/geometry';
 import type {
   FloorLevel,
   FurnitureItem,
@@ -79,6 +79,8 @@ interface EditorState {
   moveFurniture: (id: string, x: number, y: number) => void;
   moveWallEndpoint: (id: string, end: 'a' | 'b', point: Point) => void;
   moveWallBy: (id: string, dx: number, dy: number) => void;
+  /** Returns snapped point for UI feedback while dragging */
+  previewEndpointSnap: (id: string, end: 'a' | 'b', point: Point) => Point;
   moveOpening: (id: string, offset: number) => void;
   resetDemo: () => void;
   copyFloorPlan: (from: FloorLevel, to: FloorLevel) => void;
@@ -137,17 +139,24 @@ export const useEditorStore = create<EditorState>()(
             },
           }),
         })),
-      beginWall: (p) => set({ draftStart: snapPoint(p) }),
+      beginWall: (p) => {
+        const { project } = get();
+        const walls = project.walls.filter((w) => w.floor === project.activeFloor);
+        const hit = magnetSnapPoint(p, walls, { freeWhenFar: false });
+        set({ draftStart: hit.point });
+      },
       cancelDraft: () => set({ draftStart: null }),
       finishWall: (p) => {
         const start = get().draftStart;
         if (!start) return;
-        const end = snapPoint(p);
+        const { project, wallKind } = get();
+        const walls = project.walls.filter((w) => w.floor === project.activeFloor);
+        const hit = magnetSnapPoint(p, walls, { freeWhenFar: false });
+        const end = hit.point;
         if (Math.hypot(end.x - start.x, end.y - start.y) < 200) {
           set({ draftStart: null });
           return;
         }
-        const { project, wallKind } = get();
         const wall: Wall = {
           id: uid('wall'),
           a: start,
@@ -257,7 +266,14 @@ export const useEditorStore = create<EditorState>()(
         })),
       moveWallEndpoint: (id, end, point) =>
         set((s) => {
-          const p = snapPoint(point);
+          const walls = s.project.walls.filter(
+            (w) => w.floor === s.project.activeFloor && w.id !== id,
+          );
+          const hit = magnetSnapPoint(point, walls, { ignoreWallId: id, freeWhenFar: true });
+          const p =
+            hit.kind === 'grid'
+              ? { x: Math.round(point.x), y: Math.round(point.y) }
+              : hit.point;
           return {
             project: touch({
               ...s.project,
@@ -267,18 +283,54 @@ export const useEditorStore = create<EditorState>()(
             }),
           };
         }),
+      previewEndpointSnap: (id, _end, point) => {
+        const s = get();
+        const walls = s.project.walls.filter(
+          (w) => w.floor === s.project.activeFloor && w.id !== id,
+        );
+        const hit = magnetSnapPoint(point, walls, { ignoreWallId: id, freeWhenFar: true });
+        return hit.kind === 'grid' ? { x: Math.round(point.x), y: Math.round(point.y) } : hit.point;
+      },
       moveWallBy: (id, dx, dy) =>
-        set((s) => ({
-          project: touch({
-            ...s.project,
-            walls: s.project.walls.map((w) => {
-              if (w.id !== id) return w;
-              const a = snapPoint({ x: w.a.x + dx, y: w.a.y + dy });
-              const b = snapPoint({ x: w.b.x + dx, y: w.b.y + dy });
-              return { ...w, a, b };
+        set((s) => {
+          const wall = s.project.walls.find((w) => w.id === id);
+          if (!wall) return s;
+          const others = s.project.walls.filter(
+            (w) => w.floor === s.project.activeFloor && w.id !== id,
+          );
+          let adx = dx;
+          let ady = dy;
+          const candidates: { dx: number; dy: number; dist: number }[] = [];
+          for (const end of ['a', 'b'] as const) {
+            const raw = { x: wall[end].x + dx, y: wall[end].y + dy };
+            const hit = magnetSnapPoint(raw, others, { freeWhenFar: true });
+            if (hit.kind !== 'grid') {
+              candidates.push({
+                dx: hit.point.x - wall[end].x,
+                dy: hit.point.y - wall[end].y,
+                dist: hit.strength,
+              });
+            }
+          }
+          if (candidates.length) {
+            candidates.sort((a, b) => a.dist - b.dist);
+            adx = candidates[0].dx;
+            ady = candidates[0].dy;
+          }
+          return {
+            project: touch({
+              ...s.project,
+              walls: s.project.walls.map((w) => {
+                if (w.id !== id) return w;
+                return {
+                  ...w,
+                  a: { x: Math.round(w.a.x + adx), y: Math.round(w.a.y + ady) },
+                  b: { x: Math.round(w.b.x + adx), y: Math.round(w.b.y + ady) },
+                };
+              }),
             }),
-          }),
-        })),
+          };
+        }),
       moveOpening: (id, offset) =>
         set((s) => {
           const opening = s.project.openings.find((o) => o.id === id);
