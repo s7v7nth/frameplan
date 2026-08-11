@@ -161,33 +161,49 @@ export function ReportsView() {
       {tab === 'cutting' && (
         <div className="report-grid">
           {model.cutting.map((c, idx) => (
-            <section className="card-plain" key={idx}>
+            <section className="card-plain wide" key={idx}>
               <h3>
-                Раскрой {c.sectionMm.width}×{c.sectionMm.depth} → хлысты {c.stockLengthMm} мм
+                Раскрой {c.sectionMm.width}×{c.sectionMm.depth} мм → хлысты {c.stockLengthMm} мм
               </h3>
               <p className="muted">
-                Нужно досок: <strong>{c.boardsNeeded}</strong> · утилизация{' '}
-                {(c.utilization * 100).toFixed(0)}% · отход {c.wasteMm} мм
+                В раскладке: <strong>{c.boards.length}</strong> хлыстов · к покупке (смета):{' '}
+                <strong>{c.boardsNeeded}</strong> · утилизация {(c.utilization * 100).toFixed(0)}%
               </p>
-              <div className="table-wrap">
-                <table>
-                  <thead>
-                    <tr>
-                      <th>Деталь</th>
-                      <th>Длина, мм</th>
-                      <th>Кол-во</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {c.pieces.map((p, i) => (
-                      <tr key={i}>
-                        <td>{p.label}</td>
-                        <td>{p.lengthMm}</td>
-                        <td>{p.qty}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
+              <div className="cut-boards">
+                {c.boards.map((b) => (
+                  <div key={b.id} className="cut-board">
+                    <div className="cut-board-head">
+                      Хлыст №{b.index} · {b.stockLengthMm} мм · остаток {b.wasteMm} мм
+                    </div>
+                    <div className="cut-bar">
+                      {b.cuts.map((cut, i) => (
+                        <div
+                          key={i}
+                          className="cut-seg"
+                          style={{ flex: cut.lengthMm }}
+                          title={`${cut.label}: ${cut.lengthMm} мм`}
+                        >
+                          <span>
+                            {cut.lengthMm}
+                            <small>{cut.label}</small>
+                          </span>
+                        </div>
+                      ))}
+                      {b.wasteMm > 0 && (
+                        <div className="cut-seg waste" style={{ flex: b.wasteMm }}>
+                          <span>отход {b.wasteMm}</span>
+                        </div>
+                      )}
+                    </div>
+                    <ol className="cut-list">
+                      {b.cuts.map((cut, i) => (
+                        <li key={i}>
+                          {cut.label} — <strong>{cut.lengthMm} мм</strong>
+                        </li>
+                      ))}
+                    </ol>
+                  </div>
+                ))}
               </div>
             </section>
           ))}

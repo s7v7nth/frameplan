@@ -77,6 +77,9 @@ interface EditorState {
   deleteSelected: () => void;
   addFurniture: (kind: string) => void;
   moveFurniture: (id: string, x: number, y: number) => void;
+  moveWallEndpoint: (id: string, end: 'a' | 'b', point: Point) => void;
+  moveWallBy: (id: string, dx: number, dy: number) => void;
+  moveOpening: (id: string, offset: number) => void;
   resetDemo: () => void;
   copyFloorPlan: (from: FloorLevel, to: FloorLevel) => void;
   loadProject: (p: Project) => void;
@@ -170,7 +173,7 @@ export const useEditorStore = create<EditorState>()(
             best = { wall, offset: hit.t * wallLength(wall), dist: hit.dist };
           }
         }
-        if (!best || best.dist > 400) return;
+        if (!best || best.dist > 800) return;
         const opening: Opening = {
           id: uid('op'),
           wallId: best.wall.id,
@@ -252,6 +255,47 @@ export const useEditorStore = create<EditorState>()(
             ),
           }),
         })),
+      moveWallEndpoint: (id, end, point) =>
+        set((s) => {
+          const p = snapPoint(point);
+          return {
+            project: touch({
+              ...s.project,
+              walls: s.project.walls.map((w) =>
+                w.id === id ? { ...w, [end]: p } : w,
+              ),
+            }),
+          };
+        }),
+      moveWallBy: (id, dx, dy) =>
+        set((s) => ({
+          project: touch({
+            ...s.project,
+            walls: s.project.walls.map((w) => {
+              if (w.id !== id) return w;
+              const a = snapPoint({ x: w.a.x + dx, y: w.a.y + dy });
+              const b = snapPoint({ x: w.b.x + dx, y: w.b.y + dy });
+              return { ...w, a, b };
+            }),
+          }),
+        })),
+      moveOpening: (id, offset) =>
+        set((s) => {
+          const opening = s.project.openings.find((o) => o.id === id);
+          if (!opening) return s;
+          const wall = s.project.walls.find((w) => w.id === opening.wallId);
+          if (!wall) return s;
+          const max = Math.max(0, wallLength(wall) - opening.width);
+          const next = Math.max(0, Math.min(max, Math.round(offset)));
+          return {
+            project: touch({
+              ...s.project,
+              openings: s.project.openings.map((o) =>
+                o.id === id ? { ...o, offset: next } : o,
+              ),
+            }),
+          };
+        }),
       resetDemo: () => set({ project: demoProject(), selectedId: null, draftStart: null }),
       copyFloorPlan: (from, to) => {
         const { project } = get();
@@ -289,7 +333,7 @@ export const useEditorStore = create<EditorState>()(
       loadProject: (project) => set({ project, selectedId: null }),
       exportJson: () => JSON.stringify(get().project, null, 2),
     }),
-    { name: 'frameplan-project-v1' },
+    { name: 'frameplan-project-v2' },
   ),
 );
 

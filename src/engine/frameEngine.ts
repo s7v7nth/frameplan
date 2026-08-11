@@ -3,10 +3,12 @@ import {
   EXTERIOR_CLADDING,
   FLOOR_FINISH,
   INTERIOR_FINISH,
+  PREFERRED_STOCK_MM,
   STOCK_LENGTHS_MM,
 } from '../domain/materials';
 import type {
   BomLine,
+  CuttingBoard,
   CuttingStock,
   FloorLevel,
   FrameMember,
@@ -18,9 +20,11 @@ import type {
   SheetItem,
 } from '../domain/types';
 import {
+  buildCaliforniaCorners,
   buildFloorMembers,
   buildRoofMembers,
   buildWallMembers,
+  prepareWallSkipFlags,
   renderFrameProjections,
 } from './frameGeometry';
 
@@ -114,10 +118,10 @@ function generateSheathing(project: Project, sheets: SheetItem[]) {
   });
 }
 
-/** First-fit decreasing nesting onto stock lengths. */
+/** Nest pieces onto stock boards. Prefer 6000 mm. Returns per-board cut lists. */
 export function nestCutting(lumber: LumberPiece[], wasteFactor: number): CuttingStock[] {
-  type Key = string;
-  const groups = new Map<Key, LumberPiece[]>();
+  const kerf = 3; // mm saw kerf between cuts
+  const groups = new Map<string, LumberPiece[]>();
   for (const p of lumber) {
     const key = `${p.sectionMm.width}x${p.sectionMm.depth}`;
     const arr = groups.get(key) ?? [];
@@ -129,30 +133,76 @@ export function nestCutting(lumber: LumberPiece[], wasteFactor: number): Cutting
   for (const [, pieces] of groups) {
     const section = pieces[0].sectionMm;
     const expanded = pieces
-      .map((p) => ({ lengthMm: Math.ceil(p.lengthMm), label: p.label }))
-      .filter((p) => p.lengthMm > 0)
+      .flatMap((p) => {
+        const lengthMm = Math.ceil(p.lengthMm);
+        if (lengthMm <= 0) return [];
+        // Split members longer than preferred stock into splice segments
+        if (lengthMm > PREFERRED_STOCK_MM) {
+          const n = Math.ceil(lengthMm / PREFERRED_STOCK_MM);
+          const seg = Math.ceil(lengthMm / n);
+          return Array.from({ length: n }, (_, i) => ({
+            lengthMm: i === n - 1 ? lengthMm - seg * (n - 1) : seg,
+            label: `${p.label} (стык ${i + 1}/${n})`,
+          }));
+        }
+        return [{ lengthMm, label: p.label }];
+      })
       .sort((a, b) => b.lengthMm - a.lengthMm);
 
     const maxPiece = expanded[0]?.lengthMm ?? 0;
     const stockLengthMm =
-      STOCK_LENGTHS_MM.find((l) => l >= maxPiece) ?? Math.ceil(maxPiece / 1000) * 1000;
+      maxPiece > PREFERRED_STOCK_MM
+        ? STOCK_LENGTHS_MM.find((l) => l >= maxPiece) ?? Math.ceil(maxPiece / 1000) * 1000
+        : PREFERRED_STOCK_MM;
 
-    const bins: number[] = [];
+    type Bin = { used: number; cuts: { label: string; lengthMm: number }[] };
+    const bins: Bin[] = [];
+
     for (const piece of expanded) {
+      // Pieces longer than stock: place alone on oversized board
+      const need = piece.lengthMm;
+      if (need > stockLengthMm) {
+        bins.push({ used: need, cuts: [piece] });
+        continue;
+      }
       let placed = false;
-      for (let i = 0; i < bins.length; i++) {
-        if (bins[i] + piece.lengthMm <= stockLengthMm) {
-          bins[i] += piece.lengthMm;
+      for (const bin of bins) {
+        if (bin.used === 0) {
+          bin.cuts.push(piece);
+          bin.used = need;
+          placed = true;
+          break;
+        }
+        const next = bin.used + kerf + need;
+        if (next <= stockLengthMm) {
+          bin.cuts.push(piece);
+          bin.used = next;
           placed = true;
           break;
         }
       }
-      if (!placed) bins.push(piece.lengthMm);
+      if (!placed) bins.push({ used: need, cuts: [piece] });
     }
 
-    const boardsNeeded = Math.ceil(bins.length * wasteFactor);
-    const used = bins.reduce((s, b) => s + b, 0);
-    const wasteMm = boardsNeeded * stockLengthMm - used;
+    const boards: CuttingBoard[] = bins.map((bin, index) => {
+      const stock = bin.used > stockLengthMm ? bin.used : stockLengthMm;
+      return {
+        id: `board_${section.width}x${section.depth}_${index + 1}`,
+        index: index + 1,
+        stockLengthMm: stock,
+        cuts: bin.cuts,
+        usedMm: bin.used,
+        wasteMm: Math.max(0, stock - bin.used),
+      };
+    });
+
+    const boardsNeeded = Math.ceil(boards.length * wasteFactor);
+    const totalStock = boards.reduce((s, b) => s + b.stockLengthMm, 0);
+    const totalUsed = boards.reduce((s, b) => s + b.usedMm, 0);
+    // Extra buy boards from waste factor counted as full stock
+    const extra = boardsNeeded - boards.length;
+    const wasteMm =
+      boards.reduce((s, b) => s + b.wasteMm, 0) + extra * stockLengthMm;
 
     const agg = new Map<string, { lengthMm: number; label: string; qty: number }>();
     for (const p of expanded) {
@@ -165,10 +215,11 @@ export function nestCutting(lumber: LumberPiece[], wasteFactor: number): Cutting
     result.push({
       sectionMm: section,
       stockLengthMm,
+      boards,
       pieces: [...agg.values()],
       boardsNeeded,
       wasteMm,
-      utilization: used / (boardsNeeded * stockLengthMm || 1),
+      utilization: totalUsed / ((totalStock + extra * stockLengthMm) || 1),
     });
   }
   return result;
@@ -188,18 +239,20 @@ function buildBom(
   };
 
   for (const c of cutting) {
-    const vol =
-      (c.sectionMm.width / 1000) *
-      (c.sectionMm.depth / 1000) *
-      (c.stockLengthMm / 1000) *
-      c.boardsNeeded;
     push({
       group: 'Пиломатериал',
-      name: `Доска ${c.sectionMm.width}×${c.sectionMm.depth} мм, L=${c.stockLengthMm} мм`,
-      unit: 'м³',
-      qty: Number(vol.toFixed(3)),
-      unitPrice: project.settings.lumberPriceRubPerM3,
-      note: `${c.boardsNeeded} шт, утилизация ${(c.utilization * 100).toFixed(0)}%`,
+      name: `Хлыст ${c.sectionMm.width}×${c.sectionMm.depth} мм × ${c.stockLengthMm} мм`,
+      unit: 'шт',
+      qty: c.boardsNeeded,
+      unitPrice: Number(
+        (
+          project.settings.lumberPriceRubPerM3 *
+          (c.sectionMm.width / 1000) *
+          (c.sectionMm.depth / 1000) *
+          (c.stockLengthMm / 1000)
+        ).toFixed(0),
+      ),
+      note: `К покупке (с запасом ${(project.settings.wasteFactor * 100 - 100).toFixed(0)}%). Раскрой: ${c.boards.length} хлыстов в раскладке`,
     });
   }
 
@@ -408,10 +461,21 @@ export function generateFrameModel(project: Project): FrameModel {
     buildFloorMembers(project, fl, members, lumber);
   }
 
-  for (const wall of project.walls) {
-    if (project.settings.floors === 1 && wall.floor === 1) continue;
-    buildWallMembers(wall, project.openings, project.settings, members, lumber);
+  const wallsToFrame = project.walls.filter(
+    (w) => !(project.settings.floors === 1 && w.floor === 1),
+  );
+  const skipFlags = prepareWallSkipFlags(wallsToFrame);
+  for (const wall of wallsToFrame) {
+    buildWallMembers(
+      wall,
+      project.openings,
+      project.settings,
+      members,
+      lumber,
+      skipFlags.get(wall.id) ?? { start: false, end: false },
+    );
   }
+  buildCaliforniaCorners(wallsToFrame, project.settings, members, lumber);
 
   buildRoofMembers(project, members, lumber);
   generateSheathing(project, sheets);

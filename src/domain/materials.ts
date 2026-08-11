@@ -122,7 +122,9 @@ export const INSULATION_OPTIONS = [
   { id: 'eps', name: 'Пенополистирол', lambda: 0.038, priceRubPerM3: 3800 },
 ] as const;
 
-export const STOCK_LENGTHS_MM = [3000, 4500, 6000] as const;
+export const STOCK_LENGTHS_MM = [6000, 4500, 3000] as const;
+/** Preferred stock length for nesting (typical lumber yard). */
+export const PREFERRED_STOCK_MM = 6000;
 
 export const DEFAULT_SETTINGS: ProjectSettings = {
   floors: 1,

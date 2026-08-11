@@ -338,6 +338,68 @@ select {
   margin-bottom: 6px;
 }
 
+.cut-boards {
+  display: grid;
+  gap: 12px;
+}
+
+.cut-board {
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 10px;
+  background: #fff;
+}
+
+.cut-board-head {
+  font-size: 0.88rem;
+  margin-bottom: 8px;
+  color: var(--forest);
+  font-weight: 600;
+}
+
+.cut-bar {
+  display: flex;
+  height: 42px;
+  border-radius: 8px;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  margin-bottom: 8px;
+}
+
+.cut-seg {
+  display: grid;
+  place-items: center;
+  background: #2f5d50;
+  color: #fff;
+  font-size: 0.72rem;
+  min-width: 0;
+  border-right: 1px solid rgba(255, 255, 255, 0.35);
+  padding: 2px;
+  text-align: center;
+}
+
+.cut-seg small {
+  display: block;
+  opacity: 0.85;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 100%;
+}
+
+.cut-seg.waste {
+  background: #d6d3d1;
+  color: #57534e;
+  border-right: none;
+}
+
+.cut-list {
+  margin: 0;
+  padding-left: 18px;
+  font-size: 0.84rem;
+  color: var(--muted);
+}
+
 .table-wrap {
   overflow: auto;
   max-height: 480px;

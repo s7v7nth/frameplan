@@ -1,12 +1,21 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { KonvaEventObject } from 'konva/lib/Node';
 import { Stage, Layer, Line, Rect, Text, Circle, Group } from 'react-konva';
-import { wallAngle, wallLength, pointAlongWall } from '../domain/geometry';
+import {
+  wallAngle,
+  wallLength,
+  pointAlongWall,
+  snapPoint,
+  projectPointOnSegment,
+} from '../domain/geometry';
 import { useEditorStore } from '../store/editorStore';
 
 export function PlanCanvas() {
   const containerRef = useRef<HTMLDivElement>(null);
+  const wallDragRef = useRef({ id: '', x: 0, y: 0 });
   const [size, setSize] = useState({ width: 800, height: 600 });
+  const [spacePan, setSpacePan] = useState(false);
+  const [hover, setHover] = useState<{ x: number; y: number } | null>(null);
   const {
     project,
     tool,
@@ -20,6 +29,10 @@ export function PlanCanvas() {
     addOpeningAt,
     deleteSelected,
     moveFurniture,
+    moveWallEndpoint,
+    moveWallBy,
+    moveOpening,
+    updateOpening,
     setOffset,
     setScale,
   } = useEditorStore();
@@ -36,12 +49,27 @@ export function PlanCanvas() {
   }, []);
 
   useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Delete' || e.key === 'Backspace') deleteSelected();
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.code === 'Space') {
+        e.preventDefault();
+        setSpacePan(true);
+      }
+      if (e.key === 'Delete' || e.key === 'Backspace') {
+        const tag = (e.target as HTMLElement)?.tagName;
+        if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+        deleteSelected();
+      }
       if (e.key === 'Escape') useEditorStore.getState().cancelDraft();
     };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
+    const onKeyUp = (e: KeyboardEvent) => {
+      if (e.code === 'Space') setSpacePan(false);
+    };
+    window.addEventListener('keydown', onKeyDown);
+    window.addEventListener('keyup', onKeyUp);
+    return () => {
+      window.removeEventListener('keydown', onKeyDown);
+      window.removeEventListener('keyup', onKeyUp);
+    };
   }, [deleteSelected]);
 
   const toWorld = useCallback(
@@ -61,9 +89,12 @@ export function PlanCanvas() {
     [project.furniture, project.activeFloor],
   );
 
-  const onPointer = (e: KonvaEventObject<MouseEvent>) => {
+  const handleStagePointer = (e: KonvaEventObject<MouseEvent>) => {
+    if (spacePan) return;
     const stage = e.target.getStage();
     if (!stage) return;
+    // Only empty-stage clicks start wall / clear selection
+    if (e.target !== stage) return;
     const pos = stage.getPointerPosition();
     if (!pos) return;
     const world = toWorld(pos.x, pos.y);
@@ -81,19 +112,15 @@ export function PlanCanvas() {
       addOpeningAt(world, 'door');
       return;
     }
-    if (tool === 'select') {
-      if (e.target === stage) select(null);
-    }
+    if (tool === 'select') select(null);
   };
-
-  const [hover, setHover] = useState<{ x: number; y: number } | null>(null);
 
   return (
     <div className="canvas-wrap" ref={containerRef}>
       <Stage
         width={size.width}
         height={size.height}
-        onClick={onPointer}
+        onMouseDown={handleStagePointer}
         onMouseMove={(e) => {
           const stage = e.target.getStage();
           const pos = stage?.getPointerPosition();
@@ -113,21 +140,29 @@ export function PlanCanvas() {
             y: pointer.y - world.y * newScale,
           });
         }}
-        draggable={tool === 'select'}
+        draggable={spacePan}
         onDragEnd={(e) => {
           if (e.target.getClassName() === 'Stage') {
-            setOffset({ x: e.target.x(), y: e.target.y() });
+            setOffset({
+              x: offset.x + e.target.x(),
+              y: offset.y + e.target.y(),
+            });
             e.target.position({ x: 0, y: 0 });
           }
         }}
-        style={{ cursor: tool === 'wall' ? 'crosshair' : 'default' }}
+        style={{
+          cursor: spacePan
+            ? 'grab'
+            : tool === 'wall' || tool === 'window' || tool === 'door'
+              ? 'crosshair'
+              : 'default',
+        }}
       >
         <Layer x={offset.x} y={offset.y} scaleX={scale} scaleY={scale}>
-          {/* grid */}
           {Array.from({ length: 40 }, (_, i) => {
             const v = (i - 5) * 1000;
             return (
-              <Group key={`g${i}`}>
+              <Group key={`g${i}`} listening={false}>
                 <Line points={[-5000, v, 20000, v]} stroke="#d7e0d8" strokeWidth={1 / scale} />
                 <Line points={[v, -5000, v, 20000]} stroke="#d7e0d8" strokeWidth={1 / scale} />
               </Group>
@@ -141,14 +176,39 @@ export function PlanCanvas() {
                 <Line
                   points={[wall.a.x, wall.a.y, wall.b.x, wall.b.y]}
                   stroke={selected ? '#c45c26' : wall.kind === 'exterior' ? '#1f3a2e' : '#64748b'}
-                  strokeWidth={(selected ? 220 : wall.thickness) }
+                  strokeWidth={selected ? 220 : wall.thickness}
                   lineCap="square"
-                  onClick={(e) => {
+                  hitStrokeWidth={300}
+                  draggable={tool === 'select' && !spacePan}
+                  onDragStart={(e) => {
+                    wallDragRef.current = { id: wall.id, x: e.target.x(), y: e.target.y() };
+                    select(wall.id);
+                  }}
+                  onDragEnd={(e) => {
+                    const dx = e.target.x() - wallDragRef.current.x;
+                    const dy = e.target.y() - wallDragRef.current.y;
+                    e.target.position({ x: 0, y: 0 });
+                    if (Math.hypot(dx, dy) > 1) moveWallBy(wall.id, dx, dy);
+                  }}
+                  onMouseDown={(e) => {
                     e.cancelBubble = true;
-                    if (tool === 'select' || tool === 'delete') {
-                      select(wall.id);
-                      if (tool === 'delete') deleteSelected();
+                    if (tool === 'window' || tool === 'door') {
+                      const stage = e.target.getStage();
+                      const pos = stage?.getPointerPosition();
+                      if (pos) addOpeningAt(toWorld(pos.x, pos.y), tool);
+                      return;
                     }
+                    if (tool === 'wall') {
+                      const stage = e.target.getStage();
+                      const pos = stage?.getPointerPosition();
+                      if (!pos) return;
+                      const world = toWorld(pos.x, pos.y);
+                      if (!draftStart) beginWall(world);
+                      else finishWall(world);
+                      return;
+                    }
+                    select(wall.id);
+                    if (tool === 'delete') deleteSelected();
                   }}
                 />
                 <Line
@@ -159,12 +219,37 @@ export function PlanCanvas() {
                 />
                 <Text
                   x={(wall.a.x + wall.b.x) / 2}
-                  y={(wall.a.y + wall.b.y) / 2 - 180 / scale}
+                  y={(wall.a.y + wall.b.y) / 2 - 180}
                   text={`${(wallLength(wall) / 1000).toFixed(2)} м`}
                   fontSize={140}
                   fill="#334155"
                   listening={false}
                 />
+                {selected && tool === 'select' &&
+                  (['a', 'b'] as const).map((end) => {
+                    const p = wall[end];
+                    return (
+                      <Circle
+                        key={end}
+                        x={p.x}
+                        y={p.y}
+                        radius={120}
+                        fill="#c45c26"
+                        stroke="#fff"
+                        strokeWidth={20}
+                        draggable={!spacePan}
+                        onMouseDown={(e) => {
+                          e.cancelBubble = true;
+                        }}
+                        onDragMove={(e) => {
+                          e.cancelBubble = true;
+                          const np = snapPoint({ x: e.target.x(), y: e.target.y() });
+                          e.target.position(np);
+                          moveWallEndpoint(wall.id, end, np);
+                        }}
+                      />
+                    );
+                  })}
               </Group>
             );
           })}
@@ -179,12 +264,14 @@ export function PlanCanvas() {
               const nx = Math.cos(ang + Math.PI / 2) * (wall.thickness / 2 + 40);
               const ny = Math.sin(ang + Math.PI / 2) * (wall.thickness / 2 + 40);
               const selected = selectedId === o.id;
+              const mid = pointAlongWall(wall, o.offset + o.width / 2);
               return (
                 <Group
                   key={o.id}
-                  onClick={(e) => {
+                  onMouseDown={(e) => {
                     e.cancelBubble = true;
                     select(o.id);
+                    if (tool === 'delete') deleteSelected();
                   }}
                 >
                   <Line
@@ -192,21 +279,95 @@ export function PlanCanvas() {
                     stroke={selected ? '#c45c26' : o.type === 'window' ? '#2563eb' : '#b45309'}
                     strokeWidth={wall.thickness + 40}
                     lineCap="butt"
+                    hitStrokeWidth={350}
                   />
                   {o.type === 'window' && (
                     <Line
                       points={[p1.x + nx, p1.y + ny, p2.x + nx, p2.y + ny]}
                       stroke="#93c5fd"
                       strokeWidth={30}
+                      listening={false}
                     />
                   )}
                   <Text
-                    x={(p1.x + p2.x) / 2 - 200}
-                    y={(p1.y + p2.y) / 2 - 250}
+                    x={mid.x - 80}
+                    y={mid.y - 200}
                     text={o.type === 'window' ? 'О' : 'Д'}
                     fontSize={160}
                     fill="#0f172a"
+                    listening={false}
                   />
+                  {selected && tool === 'select' && (
+                    <>
+                      <Circle
+                        x={mid.x}
+                        y={mid.y}
+                        radius={100}
+                        fill="#2563eb"
+                        stroke="#fff"
+                        strokeWidth={16}
+                        draggable={!spacePan}
+                        onMouseDown={(e) => {
+                          e.cancelBubble = true;
+                        }}
+                        onDragMove={(e) => {
+                          e.cancelBubble = true;
+                          const hit = projectPointOnSegment(
+                            { x: e.target.x(), y: e.target.y() },
+                            wall.a,
+                            wall.b,
+                          );
+                          const nextOffset = hit.t * wallLength(wall) - o.width / 2;
+                          moveOpening(o.id, nextOffset);
+                          const m = pointAlongWall(
+                            wall,
+                            Math.max(0, Math.min(wallLength(wall) - o.width, nextOffset)) +
+                              o.width / 2,
+                          );
+                          e.target.position(m);
+                        }}
+                      />
+                      {([0, 1] as const).map((side) => {
+                        const pt = side === 0 ? p1 : p2;
+                        return (
+                          <Circle
+                            key={side}
+                            x={pt.x}
+                            y={pt.y}
+                            radius={90}
+                            fill="#0f766e"
+                            stroke="#fff"
+                            strokeWidth={14}
+                            draggable={!spacePan}
+                            onMouseDown={(e) => {
+                              e.cancelBubble = true;
+                            }}
+                            onDragMove={(e) => {
+                              e.cancelBubble = true;
+                              const hit = projectPointOnSegment(
+                                { x: e.target.x(), y: e.target.y() },
+                                wall.a,
+                                wall.b,
+                              );
+                              const along = hit.t * wallLength(wall);
+                              if (side === 0) {
+                                const right = o.offset + o.width;
+                                const newOffset = Math.min(along, right - 400);
+                                updateOpening(o.id, {
+                                  offset: Math.round(newOffset),
+                                  width: Math.round(right - newOffset),
+                                });
+                              } else {
+                                updateOpening(o.id, {
+                                  width: Math.round(Math.max(400, along - o.offset)),
+                                });
+                              }
+                            }}
+                          />
+                        );
+                      })}
+                    </>
+                  )}
                 </Group>
               );
             })}
@@ -216,9 +377,9 @@ export function PlanCanvas() {
               key={f.id}
               x={f.x}
               y={f.y}
-              draggable={tool === 'select'}
+              draggable={tool === 'select' && !spacePan}
               onDragEnd={(e) => moveFurniture(f.id, e.target.x(), e.target.y())}
-              onClick={(e) => {
+              onMouseDown={(e) => {
                 e.cancelBubble = true;
                 select(f.id);
               }}
@@ -235,19 +396,23 @@ export function PlanCanvas() {
             </Group>
           ))}
 
-          {draftStart && hover && (
+          {draftStart && hover && tool === 'wall' && (
             <Line
               points={[draftStart.x, draftStart.y, hover.x, hover.y]}
               stroke="#c45c26"
               strokeWidth={120}
               dash={[200, 120]}
+              listening={false}
             />
           )}
-          {draftStart && <Circle x={draftStart.x} y={draftStart.y} radius={80} fill="#c45c26" />}
+          {draftStart && tool === 'wall' && (
+            <Circle x={draftStart.x} y={draftStart.y} radius={80} fill="#c45c26" listening={false} />
+          )}
         </Layer>
       </Stage>
       <div className="canvas-hint">
-        Сетка 1 м · колёсико — масштаб · перетаскивание сцены в режиме «Выбор» · Delete — удалить
+        Стена/окно/дверь — клик · Выбор: тянуть стену и оранжевые ручки · Проём: синяя = сдвиг,
+        зелёные = ширина · Space — панорама · Delete — удалить
       </div>
     </div>
   );

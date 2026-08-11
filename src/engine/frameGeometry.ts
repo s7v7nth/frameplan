@@ -74,6 +74,7 @@ export function buildWallMembers(
   settings: ProjectSettings,
   members: FrameMember[],
   lumber: LumberPiece[],
+  skipEndStuds: { start: boolean; end: boolean } = { start: false, end: false },
 ) {
   const len = Math.round(wallLength(wall));
   if (len < 50) return;
@@ -82,20 +83,19 @@ export function buildWallMembers(
   const H = wall.height || settings.floorHeightMm;
   const section = settings.studSectionMm;
   const tw = section.width; // stud thickness along wall
-  const td = section.depth; // stud depth into wall
+  const td = section.depth;
   const spacing = settings.studSpacingMm;
   const bottomH = Math.max(38, Math.min(td, 50));
   const topPly = Math.max(38, Math.min(td, 50));
   const topPlies = 2;
   const topH = topPly * topPlies;
-  const studLen = H - bottomH - topH;
   const ang = wallAngle(wall);
 
-  // Bottom plate
+  // Bottom plate — same section as studs (laid flat)
   pushMember(members, lumber, {
     kind: 'bottom_plate',
     label: 'Нижняя обвязка',
-    sectionMm: { width: tw, depth: bottomH },
+    sectionMm: section,
     lengthMm: len,
     floor: wall.floor,
     wallId: wall.id,
@@ -108,7 +108,7 @@ export function buildWallMembers(
     pushMember(members, lumber, {
       kind: 'top_plate',
       label: ply === 0 ? 'Верхняя обвязка (нижняя доска)' : 'Верхняя обвязка (верхняя доска)',
-      sectionMm: { width: tw, depth: topPly },
+      sectionMm: section,
       lengthMm: len,
       floor: wall.floor,
       wallId: wall.id,
@@ -125,144 +125,238 @@ export function buildWallMembers(
   type Occ = { s0: number; s1: number };
   const blocked: Occ[] = [];
 
+  const addStud = (
+    kind: FrameMember['kind'],
+    label: string,
+    s: number,
+    z0: number,
+    z1: number,
+  ) => {
+    const clamped = Math.max(0, Math.min(len - tw, s));
+    const p = along(wall, clamped + tw / 2);
+    pushMember(members, lumber, {
+      kind,
+      label,
+      sectionMm: section,
+      lengthMm: Math.max(50, z1 - z0),
+      floor: wall.floor,
+      wallId: wall.id,
+      planMark: { x: p.x, y: p.y, angle: ang },
+      elev: { s0: clamped, s1: clamped + tw, z0, z1 },
+    });
+  };
+
   for (const o of wallOpenings) {
-    const left = Math.max(0, Math.round(o.offset));
-    const right = Math.min(len, Math.round(o.offset + o.width));
-    const kingL = Math.max(0, left - tw);
-    const kingR = Math.min(len - tw, right);
-    const jackL = left;
-    const jackR = Math.max(left, right - tw);
+    // Opening rough width between jack inner faces
+    const openL = Math.max(0, Math.round(o.offset));
+    const openR = Math.min(len, Math.round(o.offset + o.width));
+    // Layout along wall: [king][jack][ opening ][jack][king]
+    const jackL = openL;
+    const jackR = openR - tw;
+    const kingL = Math.max(0, jackL - tw);
+    const kingR = Math.min(len - tw, jackR + tw);
 
     const headerDepth = o.width > 1500 ? 250 : o.width > 900 ? 200 : 150;
-    const headerBottom =
-      o.type === 'door' ? o.height : o.sillHeight + o.height;
+    // Header underside = top of rough opening
+    const headerBottom = o.type === 'door' ? o.height : o.sillHeight + o.height;
     const headerTop = Math.min(H - topH, headerBottom + headerDepth);
-    const sillTop = o.type === 'window' ? o.sillHeight : 0;
-    const sillThick = bottomH;
+    // Jacks carry the header: from bottom plate to underside of header
+    const jackZ0 = bottomH;
+    const jackZ1 = headerBottom;
 
-    // King studs — full height
-    for (const s of [kingL, kingR]) {
-      const p = along(wall, s + tw / 2);
-      pushMember(members, lumber, {
-        kind: 'king_stud',
-        label: 'Королевская стойка',
-        sectionMm: section,
-        lengthMm: studLen,
-        floor: wall.floor,
-        wallId: wall.id,
-        planMark: { x: p.x, y: p.y, angle: ang },
-        elev: { s0: s, s1: s + tw, z0: bottomH, z1: H - topH },
-      });
-    }
+    // Kings — full height beside jacks
+    addStud('king_stud', 'Королевская стойка', kingL, bottomH, H - topH);
+    addStud('king_stud', 'Королевская стойка', kingR, bottomH, H - topH);
 
-    // Jack studs — support header
-    const jackTop = headerBottom;
-    for (const s of [jackL, jackR]) {
-      if (s < 0 || s > len - tw) continue;
-      const p = along(wall, s + tw / 2);
-      pushMember(members, lumber, {
-        kind: 'jack_stud',
-        label: 'Опорная стойка (джек)',
-        sectionMm: section,
-        lengthMm: Math.max(200, jackTop - bottomH),
-        floor: wall.floor,
-        wallId: wall.id,
-        planMark: { x: p.x, y: p.y, angle: ang },
-        elev: { s0: s, s1: s + tw, z0: bottomH, z1: jackTop },
-      });
-    }
+    // Jacks — support both ends of header (must touch header underside)
+    addStud('jack_stud', 'Джек (опора перемычки)', jackL, jackZ0, jackZ1);
+    addStud('jack_stud', 'Джек (опора перемычки)', jackR, jackZ0, jackZ1);
 
-    // Header — double member spanning jacks
+    // Double header bearing on both jacks (from jackL to jackR+tw)
     const headerS0 = jackL;
     const headerS1 = jackR + tw;
     for (let ply = 0; ply < 2; ply++) {
       pushMember(members, lumber, {
         kind: 'header',
-        label: `Перемычка ${o.width} мм`,
+        label: `Перемычка ${o.width} мм (${ply + 1}/2)`,
         sectionMm: { width: tw, depth: headerDepth },
         lengthMm: Math.max(tw * 2, headerS1 - headerS0),
         floor: wall.floor,
         wallId: wall.id,
-        plan: plateSegment(wall, headerS0, headerS1, 20 + ply * 10),
+        plan: plateSegment(wall, headerS0, headerS1, 24 + ply * 12),
         elev: {
           s0: headerS0,
           s1: headerS1,
-          z0: headerBottom + ply * 2,
-          z1: headerTop + ply * 2,
+          z0: headerBottom,
+          z1: headerTop,
         },
       });
     }
 
-    if (o.type === 'window' && sillTop > bottomH + 50) {
-      // Rough sill
+    if (o.type === 'window' && o.sillHeight > bottomH + 80) {
+      const sillTop = o.sillHeight;
+      const sillThick = bottomH;
+      // Rough sill between jacks
       pushMember(members, lumber, {
         kind: 'bottom_plate',
         label: 'Подоконная доска',
-        sectionMm: { width: tw, depth: sillThick },
-        lengthMm: Math.max(tw, right - left),
+        sectionMm: section,
+        lengthMm: Math.max(tw, openR - openL),
         floor: wall.floor,
         wallId: wall.id,
-        plan: plateSegment(wall, left, right, -20),
-        elev: { s0: left, s1: right, z0: sillTop - sillThick, z1: sillTop },
+        plan: plateSegment(wall, openL, openR, -24),
+        elev: { s0: openL, s1: openR, z0: sillTop - sillThick, z1: sillTop },
       });
 
-      // Cripples below sill
-      for (let s = left + spacing; s < right - tw / 2; s += spacing) {
-        const p = along(wall, s);
-        pushMember(members, lumber, {
-          kind: 'cripple',
-          label: 'Коротыш под окном',
-          sectionMm: section,
-          lengthMm: Math.max(50, sillTop - sillThick - bottomH),
-          floor: wall.floor,
-          wallId: wall.id,
-          planMark: { x: p.x, y: p.y, angle: ang },
-          elev: { s0: s - tw / 2, s1: s + tw / 2, z0: bottomH, z1: sillTop - sillThick },
-        });
+      // Cripples under sill between jacks
+      for (let s = openL + spacing; s < openR - tw; s += spacing) {
+        addStud('cripple', 'Коротыш под окном', s, bottomH, sillTop - sillThick);
       }
     }
 
-    // Cripples above header
+    // Cripples above header up to top plate
     if (H - topH - headerTop > 80) {
-      for (let s = left + spacing; s < right - tw / 2; s += spacing) {
-        const p = along(wall, s);
-        pushMember(members, lumber, {
-          kind: 'cripple',
-          label: 'Коротыш над перемычкой',
-          sectionMm: section,
-          lengthMm: H - topH - headerTop,
-          floor: wall.floor,
-          wallId: wall.id,
-          planMark: { x: p.x, y: p.y, angle: ang },
-          elev: { s0: s - tw / 2, s1: s + tw / 2, z0: headerTop, z1: H - topH },
-        });
+      for (let s = openL + spacing; s < openR - tw; s += spacing) {
+        addStud('cripple', 'Коротыш над перемычкой', s, headerTop, H - topH);
       }
     }
 
+    // Block out entire king-to-king zone from regular studs
     blocked.push({ s0: kingL, s1: kingR + tw });
   }
 
   const isBlocked = (s: number) =>
     blocked.some((b) => s + tw / 2 > b.s0 + 1 && s + tw / 2 < b.s1 - 1);
 
-  // Regular studs + corners
-  const studPositions = new Set<number>([0, Math.max(0, len - tw)]);
+  // Regular studs (corners handled by California corner assembly when walls meet)
+  const studPositions = new Set<number>();
+  if (!skipEndStuds.start) studPositions.add(0);
+  if (!skipEndStuds.end) studPositions.add(Math.max(0, len - tw));
   for (let s = spacing; s < len - tw; s += spacing) studPositions.add(Math.round(s));
 
   for (const s of [...studPositions].sort((a, b) => a - b)) {
     if (isBlocked(s)) continue;
-    const p = along(wall, s + tw / 2);
-    pushMember(members, lumber, {
-      kind: 'stud',
-      label: 'Стойка',
-      sectionMm: section,
-      lengthMm: studLen,
-      floor: wall.floor,
-      wallId: wall.id,
-      planMark: { x: p.x, y: p.y, angle: ang },
-      elev: { s0: s, s1: s + tw, z0: bottomH, z1: H - topH },
-    });
+    addStud('stud', 'Стойка', s, bottomH, H - topH);
   }
+}
+
+function near(a: Point, b: Point, eps = 8): boolean {
+  return Math.hypot(a.x - b.x, a.y - b.y) <= eps;
+}
+
+/** Detect wall junctions and build California corners (2+1 studs). */
+export function buildCaliforniaCorners(
+  walls: Wall[],
+  settings: ProjectSettings,
+  members: FrameMember[],
+  lumber: LumberPiece[],
+): Map<string, { start: boolean; end: boolean }> {
+  const skip = new Map<string, { start: boolean; end: boolean }>();
+  for (const w of walls) skip.set(w.id, { start: false, end: false });
+
+  const ends: { wall: Wall; end: 'a' | 'b'; point: Point }[] = [];
+  for (const w of walls) {
+    ends.push({ wall: w, end: 'a', point: w.a });
+    ends.push({ wall: w, end: 'b', point: w.b });
+  }
+
+  const used = new Set<string>();
+  for (let i = 0; i < ends.length; i++) {
+    const keyI = `${ends[i].wall.id}:${ends[i].end}`;
+    if (used.has(keyI)) continue;
+    const group = [ends[i]];
+    for (let j = i + 1; j < ends.length; j++) {
+      if (ends[j].wall.floor !== ends[i].wall.floor) continue;
+      if (ends[j].wall.id === ends[i].wall.id) continue;
+      if (near(ends[i].point, ends[j].point)) group.push(ends[j]);
+    }
+    if (group.length < 2) continue;
+
+    for (const g of group) used.add(`${g.wall.id}:${g.end}`);
+
+    // Mark ends to skip simple studs
+    for (const g of group) {
+      const flags = skip.get(g.wall.id)!;
+      if (g.end === 'a') flags.start = true;
+      else flags.end = true;
+    }
+
+    // Primary wall gets California pair; others get single abutting stud
+    const primary = group[0];
+    const H = primary.wall.height || settings.floorHeightMm;
+    const section = settings.studSectionMm;
+    const tw = section.width;
+    const td = section.depth;
+    const bottomH = Math.max(38, Math.min(td, 50));
+    const topH = bottomH * 2;
+    const ang = wallAngle(primary.wall);
+    const len = wallLength(primary.wall);
+    const sCorner = primary.end === 'a' ? 0 : Math.max(0, len - tw);
+    const sInset =
+      primary.end === 'a'
+        ? Math.min(len - tw, tw + 10)
+        : Math.max(0, len - tw - (tw + 10));
+
+    const addCornerStud = (
+      wall: Wall,
+      s: number,
+      kind: FrameMember['kind'],
+      label: string,
+    ) => {
+      const p = along(wall, s + tw / 2);
+      pushMember(members, lumber, {
+        kind,
+        label,
+        sectionMm: section,
+        lengthMm: H - bottomH - topH,
+        floor: wall.floor,
+        wallId: wall.id,
+        planMark: { x: p.x, y: p.y, angle: wallAngle(wall) },
+        elev: { s0: s, s1: s + tw, z0: bottomH, z1: H - topH },
+      });
+    };
+
+    addCornerStud(primary.wall, sCorner, 'stud', 'Калифорнийский угол (стойка 1)');
+    addCornerStud(primary.wall, sInset, 'stud', 'Калифорнийский угол (стойка 2)');
+
+    for (let g = 1; g < group.length; g++) {
+      const other = group[g];
+      const oLen = wallLength(other.wall);
+      const s = other.end === 'a' ? 0 : Math.max(0, oLen - tw);
+      addCornerStud(other.wall, s, 'stud', 'Калифорнийский угол (примыкание)');
+    }
+
+    // Keep ang referenced to avoid unused in some builds
+    void ang;
+  }
+
+  return skip;
+}
+
+export function prepareWallSkipFlags(walls: Wall[]): Map<string, { start: boolean; end: boolean }> {
+  const skip = new Map<string, { start: boolean; end: boolean }>();
+  for (const w of walls) skip.set(w.id, { start: false, end: false });
+
+  const ends: { wall: Wall; end: 'a' | 'b'; point: Point }[] = [];
+  for (const w of walls) {
+    ends.push({ wall: w, end: 'a', point: w.a });
+    ends.push({ wall: w, end: 'b', point: w.b });
+  }
+
+  for (let i = 0; i < ends.length; i++) {
+    for (let j = i + 1; j < ends.length; j++) {
+      if (ends[j].wall.floor !== ends[i].wall.floor) continue;
+      if (ends[j].wall.id === ends[i].wall.id) continue;
+      if (!near(ends[i].point, ends[j].point)) continue;
+      const a = skip.get(ends[i].wall.id)!;
+      const b = skip.get(ends[j].wall.id)!;
+      if (ends[i].end === 'a') a.start = true;
+      else a.end = true;
+      if (ends[j].end === 'a') b.start = true;
+      else b.end = true;
+    }
+  }
+  return skip;
 }
 
 export function buildFloorMembers(
@@ -631,13 +725,22 @@ export function renderFrameProjections(
     const Z = (z: number) => padY + 20 + (wallH - z) * scaleY;
 
     let body = `<rect x="${X(0)}" y="${Z(wallH)}" width="${L * scaleX}" height="${wallH * scaleY}" fill="#f8fafc" stroke="#cbd5e1"/>`;
-    for (const m of mWall) {
+    // Draw order: plates, cripples, studs, kings, jacks, headers on top
+    const order = (k: string) =>
+      ({ bottom_plate: 0, top_plate: 1, cripple: 2, stud: 3, king_stud: 4, jack_stud: 5, header: 6 })[
+        k
+      ] ?? 3;
+    const sorted = [...mWall].sort((a, b) => order(a.kind) - order(b.kind));
+    for (const m of sorted) {
       const e = m.elev!;
-      const x = X(Math.min(e.s0, e.s1));
-      const w = Math.max(2, Math.abs(e.s1 - e.s0) * scaleX);
+      const rawW = Math.abs(e.s1 - e.s0) * scaleX;
+      // Vertical members (studs/jacks/kings) need visible width on drawing
+      const isPost = ['stud', 'king_stud', 'jack_stud', 'cripple'].includes(m.kind);
+      const w = isPost ? Math.max(5, rawW) : Math.max(2, rawW);
+      const x = X(Math.min(e.s0, e.s1)) - (isPost ? (w - rawW) / 2 : 0);
       const y = Z(Math.max(e.z0, e.z1));
-      const h = Math.max(2, Math.abs(e.z1 - e.z0) * scaleY);
-      body += `<rect x="${svgEsc(x)}" y="${svgEsc(y)}" width="${svgEsc(w)}" height="${svgEsc(h)}" fill="${COLORS[m.kind] ?? '#334155'}" stroke="#0f172a" stroke-width="0.4" opacity="0.92"/>`;
+      const h = Math.max(m.kind === 'header' ? 6 : 2, Math.abs(e.z1 - e.z0) * scaleY);
+      body += `<rect x="${svgEsc(x)}" y="${svgEsc(y)}" width="${svgEsc(w)}" height="${svgEsc(h)}" fill="${COLORS[m.kind] ?? '#334155'}" stroke="#0f172a" stroke-width="0.5" opacity="0.95"/>`;
     }
 
     // Opening voids outline

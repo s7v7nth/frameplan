@@ -13,6 +13,7 @@ const project: Project = {
     floors: 1,
     roofType: 'gable',
     studSpacingMm: 600,
+    wasteFactor: 1.1,
     insulation: { ...DEFAULT_SETTINGS.insulation },
     climate: { ...DEFAULT_SETTINGS.climate },
     studSectionMm: { ...DEFAULT_SETTINGS.studSectionMm },
@@ -37,30 +38,35 @@ const kinds = model.members.reduce<Record<string, number>>((acc, m) => {
   return acc;
 }, {});
 
+const ca = model.members.filter((m) => m.label.includes('Калифорнийский')).length;
+const stock6 = model.cutting.every((c) => c.stockLengthMm === 6000 || c.boards.some((b) => b.cuts[0]?.lengthMm > 6000));
+const hasBoardCuts = model.cutting.every((c) => c.boards.length > 0 && c.boards[0].cuts.length > 0);
+const bomStock = model.bom.filter((b) => b.group === 'Пиломатериал' && b.unit === 'шт');
+
 const report = {
-  footprint: model.summary.footprintM2,
   studs: kinds.stud ?? 0,
   kings: kinds.king_stud ?? 0,
   jacks: kinds.jack_stud ?? 0,
   headers: kinds.header ?? 0,
-  cripples: kinds.cripple ?? 0,
-  joists: kinds.joist ?? 0,
-  rafters: kinds.rafter ?? 0,
-  wallElevations: model.projections.wallElevations.length,
-  hasStudInPlanSvg: model.projections.planSvg.includes('circle'),
-  hasHeaderInElev: model.projections.wallElevations.some((w) => w.svg.includes('#b45309')),
+  california: ca,
+  stock6000: stock6,
+  hasBoardCuts,
+  bomStockLines: bomStock.length,
+  sampleBoard: model.cutting[0]?.boards[0],
+  buyQty: bomStock.map((b) => ({ name: b.name, qty: b.qty })),
 };
 
 console.log(JSON.stringify(report, null, 2));
 
 if (
-  report.studs < 20 ||
-  report.kings < 4 ||
   report.jacks < 4 ||
+  report.kings < 4 ||
   report.headers < 4 ||
-  !report.hasStudInPlanSvg ||
-  !report.hasHeaderInElev
+  report.california < 8 ||
+  !report.stock6000 ||
+  !report.hasBoardCuts ||
+  report.bomStockLines < 1
 ) {
-  console.error('Frame geometry smoke failed');
+  console.error('Smoke failed');
   process.exit(1);
 }

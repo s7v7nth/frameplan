@@ -168,10 +168,23 @@ export interface SheetItem {
   qty: number;
 }
 
+export interface CuttingBoard {
+  id: string;
+  index: number;
+  stockLengthMm: number;
+  cuts: { label: string; lengthMm: number }[];
+  usedMm: number;
+  wasteMm: number;
+}
+
 export interface CuttingStock {
   sectionMm: { width: number; depth: number };
   stockLengthMm: number;
+  /** Per physical stock board: how it is cut */
+  boards: CuttingBoard[];
+  /** Aggregated piece demand (for reference) */
   pieces: { lengthMm: number; label: string; qty: number }[];
+  /** How many stock boards to buy (with waste factor) */
   boardsNeeded: number;
   wasteMm: number;
   utilization: number;
