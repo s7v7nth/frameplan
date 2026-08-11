@@ -105,6 +105,67 @@ export function projectPointOnSegment(p: Point, a: Point, b: Point): { point: Po
   return { point, t, dist: Math.hypot(p.x - point.x, p.y - point.y) };
 }
 
+function nearlySame(a: Point, b: Point, eps = 12): boolean {
+  return Math.hypot(a.x - b.x, a.y - b.y) <= eps;
+}
+
+/**
+ * True only for a proper mid-span crossing (X).
+ * Shared endpoints / T-junction (end lies on other segment) are allowed.
+ */
+export function segmentsCrossProper(
+  a1: Point,
+  a2: Point,
+  b1: Point,
+  b2: Point,
+  eps = 12,
+): boolean {
+  // Shared corner — connection, not collision
+  if (
+    nearlySame(a1, b1, eps) ||
+    nearlySame(a1, b2, eps) ||
+    nearlySame(a2, b1, eps) ||
+    nearlySame(a2, b2, eps)
+  ) {
+    return false;
+  }
+
+  // T-junction: endpoint of one lies on the other segment
+  const a1onB = projectPointOnSegment(a1, b1, b2);
+  const a2onB = projectPointOnSegment(a2, b1, b2);
+  const b1onA = projectPointOnSegment(b1, a1, a2);
+  const b2onA = projectPointOnSegment(b2, a1, a2);
+  if (a1onB.dist <= eps || a2onB.dist <= eps || b1onA.dist <= eps || b2onA.dist <= eps) {
+    return false;
+  }
+
+  const ax = a2.x - a1.x;
+  const ay = a2.y - a1.y;
+  const bx = b2.x - b1.x;
+  const by = b2.y - b1.y;
+  const den = ax * by - ay * bx;
+  if (Math.abs(den) < 1e-9) return false; // parallel / colinear — allow (no X)
+
+  const t = ((b1.x - a1.x) * by - (b1.y - a1.y) * bx) / den;
+  const u = ((b1.x - a1.x) * ay - (b1.y - a1.y) * ax) / den;
+  const margin = 0.02; // ignore tiny endpoint grazes
+  return t > margin && t < 1 - margin && u > margin && u < 1 - margin;
+}
+
+/** Proposed wall segment collides with existing walls (X-cross). */
+export function wallSegmentCollides(
+  a: Point,
+  b: Point,
+  walls: Wall[],
+  ignoreWallId?: string,
+): boolean {
+  for (const w of walls) {
+    if (ignoreWallId && w.id === ignoreWallId) continue;
+    if (segmentsCrossProper(a, b, w.a, w.b)) return true;
+  }
+  return false;
+}
+
 /** Shoelace polygon area from wall graph (exterior loop approximation via bounding polygon of exterior walls). */
 export function footprintFromWalls(walls: Wall[]): { areaM2: number; perimeterM: number; bounds: { minX: number; minY: number; maxX: number; maxY: number } } {
   const exterior = walls.filter((w) => w.kind === 'exterior');

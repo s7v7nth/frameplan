@@ -1,7 +1,14 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 import { DEFAULT_SETTINGS } from '../domain/materials';
-import { projectPointOnSegment, snapPoint, uid, wallLength, magnetSnapPoint } from '../domain/geometry';
+import {
+  projectPointOnSegment,
+  snapPoint,
+  uid,
+  wallLength,
+  magnetSnapPoint,
+  wallSegmentCollides,
+} from '../domain/geometry';
 import type {
   FloorLevel,
   FurnitureItem,
@@ -152,10 +159,21 @@ export const useEditorStore = create<EditorState>()(
         const { project, wallKind } = get();
         const walls = project.walls.filter((w) => w.floor === project.activeFloor);
         const hit = magnetSnapPoint(p, walls, { freeWhenFar: false });
-        const end = hit.point;
+        let end = hit.point;
         if (Math.hypot(end.x - start.x, end.y - start.y) < 200) {
           set({ draftStart: null });
           return;
+        }
+        // Prefer magnet join; reject X-crossing through other walls
+        if (wallSegmentCollides(start, end, walls)) {
+          // Try pure magnet to nearest endpoint only
+          const endOnly = magnetSnapPoint(p, walls, { freeWhenFar: true, magnetMm: 400 });
+          if (endOnly.kind === 'endpoint' && !wallSegmentCollides(start, endOnly.point, walls)) {
+            end = endOnly.point;
+          } else {
+            set({ draftStart: null });
+            return; // refuse invalid wall
+          }
         }
         const wall: Wall = {
           id: uid('wall'),
@@ -266,14 +284,35 @@ export const useEditorStore = create<EditorState>()(
         })),
       moveWallEndpoint: (id, end, point) =>
         set((s) => {
-          const walls = s.project.walls.filter(
+          const wall = s.project.walls.find((w) => w.id === id);
+          if (!wall) return s;
+          const others = s.project.walls.filter(
             (w) => w.floor === s.project.activeFloor && w.id !== id,
           );
-          const hit = magnetSnapPoint(point, walls, { ignoreWallId: id, freeWhenFar: true });
-          const p =
+          const hit = magnetSnapPoint(point, others, { ignoreWallId: id, freeWhenFar: true });
+          let p =
             hit.kind === 'grid'
               ? { x: Math.round(point.x), y: Math.round(point.y) }
               : hit.point;
+          const fixed = end === 'a' ? wall.b : wall.a;
+          if (wallSegmentCollides(fixed, p, others)) {
+            // Prefer joining to a wall instead of crossing through it
+            if (hit.kind !== 'grid' && !wallSegmentCollides(fixed, hit.point, others)) {
+              p = hit.point;
+            } else {
+              const retry = magnetSnapPoint(point, others, {
+                ignoreWallId: id,
+                freeWhenFar: true,
+                magnetMm: 400,
+              });
+              if (retry.kind !== 'grid' && !wallSegmentCollides(fixed, retry.point, others)) {
+                p = retry.point;
+              } else {
+                return s; // block penetration
+              }
+            }
+          }
+          if (Math.hypot(p.x - fixed.x, p.y - fixed.y) < 200) return s;
           return {
             project: touch({
               ...s.project,
@@ -283,13 +322,24 @@ export const useEditorStore = create<EditorState>()(
             }),
           };
         }),
-      previewEndpointSnap: (id, _end, point) => {
+      previewEndpointSnap: (id, end, point) => {
         const s = get();
-        const walls = s.project.walls.filter(
+        const wall = s.project.walls.find((w) => w.id === id);
+        if (!wall) return point;
+        const others = s.project.walls.filter(
           (w) => w.floor === s.project.activeFloor && w.id !== id,
         );
-        const hit = magnetSnapPoint(point, walls, { ignoreWallId: id, freeWhenFar: true });
-        return hit.kind === 'grid' ? { x: Math.round(point.x), y: Math.round(point.y) } : hit.point;
+        const hit = magnetSnapPoint(point, others, { ignoreWallId: id, freeWhenFar: true });
+        let p =
+          hit.kind === 'grid'
+            ? { x: Math.round(point.x), y: Math.round(point.y) }
+            : hit.point;
+        const fixed = end === 'a' ? wall.b : wall.a;
+        if (wallSegmentCollides(fixed, p, others)) {
+          if (hit.kind !== 'grid') return wall[end]; // show stuck at last valid via store; preview keep old
+          return wall[end];
+        }
+        return p;
       },
       moveWallBy: (id, dx, dy) =>
         set((s) => {
@@ -317,16 +367,15 @@ export const useEditorStore = create<EditorState>()(
             adx = candidates[0].dx;
             ady = candidates[0].dy;
           }
+          const nextA = { x: Math.round(wall.a.x + adx), y: Math.round(wall.a.y + ady) };
+          const nextB = { x: Math.round(wall.b.x + adx), y: Math.round(wall.b.y + ady) };
+          if (wallSegmentCollides(nextA, nextB, others)) return s;
           return {
             project: touch({
               ...s.project,
               walls: s.project.walls.map((w) => {
                 if (w.id !== id) return w;
-                return {
-                  ...w,
-                  a: { x: Math.round(w.a.x + adx), y: Math.round(w.a.y + ady) },
-                  b: { x: Math.round(w.b.x + adx), y: Math.round(w.b.y + ady) },
-                };
+                return { ...w, a: nextA, b: nextB };
               }),
             }),
           };

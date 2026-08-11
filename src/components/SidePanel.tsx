@@ -57,6 +57,9 @@ export function SidePanel() {
 
       <section className="panel-section">
         <h3>Инструменты</h3>
+        <p className="muted" style={{ marginBottom: 8 }}>
+          Панель также на чертеже сверху. Горячие клавиши: V выбор, W стена, O окно, D дверь.
+        </p>
         <div className="tool-grid">
           {(
             [

@@ -5,16 +5,21 @@ import { useEditorStore } from './store/editorStore';
 import './App.css';
 
 const TABS = [
-  ['editor', 'Планировка'],
-  ['frame', 'Каркас и проекции'],
-  ['cutting', 'Раскрой'],
-  ['estimate', 'Смета'],
-  ['thermal', 'Теплопотери'],
+  ['editor', '1. Планировка', 'Рисуй стены, окна, двери'],
+  ['frame', '2. Каркас', 'Узлы, развёртки, проекции'],
+  ['cutting', '3. Раскрой', 'Как пилить хлысты'],
+  ['estimate', '4. Смета', 'Что купить'],
+  ['thermal', '5. Тепло', 'Теплопотери'],
 ] as const;
 
 export default function App() {
   const tab = useEditorStore((s) => s.tab);
   const setTab = useEditorStore((s) => s.setTab);
+  const name = useEditorStore((s) => s.project.name);
+
+  const idx = TABS.findIndex(([id]) => id === tab);
+  const next = TABS[idx + 1];
+  const prev = TABS[idx - 1];
 
   return (
     <div className="app-shell">
@@ -23,27 +28,55 @@ export default function App() {
           <span className="logo-mark">FP</span>
           <div>
             <div className="logo-title">FramePlan</div>
-            <div className="logo-sub">Редактор планировок и каркаса</div>
+            <div className="logo-sub">{name || 'Проект каркасного дома'}</div>
           </div>
         </div>
-        <nav className="tabs">
-          {TABS.map(([id, label]) => (
+        <nav className="tabs" aria-label="Этапы">
+          {TABS.map(([id, label, desc]) => (
             <button
               key={id}
               type="button"
               className={tab === id ? 'tab active' : 'tab'}
               onClick={() => setTab(id)}
+              title={desc}
             >
-              {label}
+              <span className="tab-label">{label}</span>
+              <span className="tab-desc">{desc}</span>
             </button>
           ))}
         </nav>
-      </header>
-      <div className="main">
-        <SidePanel />
-        <div className="workspace">
-          {tab === 'editor' ? <PlanCanvas /> : <ReportsView />}
+        <div className="topbar-nav">
+          <button
+            type="button"
+            className="nav-btn"
+            disabled={!prev}
+            onClick={() => prev && setTab(prev[0])}
+          >
+            ← Назад
+          </button>
+          <button
+            type="button"
+            className="nav-btn primary"
+            disabled={!next}
+            onClick={() => next && setTab(next[0])}
+          >
+            Далее →
+          </button>
         </div>
+      </header>
+      <div className={`main ${tab === 'editor' ? 'main-editor' : 'main-report'}`}>
+        {tab === 'editor' ? (
+          <>
+            <SidePanel />
+            <div className="workspace">
+              <PlanCanvas />
+            </div>
+          </>
+        ) : (
+          <div className="workspace workspace-report">
+            <ReportsView />
+          </div>
+        )}
       </div>
     </div>
   );

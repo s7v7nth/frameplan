@@ -10,14 +10,32 @@ import {
   WALL_MAGNET_MM,
 } from '../domain/geometry';
 import { useEditorStore } from '../store/editorStore';
+import type { Tool } from '../domain/types';
+
+const TOOLS: { id: Tool; label: string; hint: string }[] = [
+  { id: 'select', label: 'Выбор', hint: 'ЛКМ по пустому — панорама' },
+  { id: 'wall', label: 'Стена', hint: 'Два клика · магнитится к стенам' },
+  { id: 'window', label: 'Окно', hint: 'Клик по стене' },
+  { id: 'door', label: 'Дверь', hint: 'Клик по стене' },
+  { id: 'delete', label: 'Удалить', hint: 'Клик по объекту' },
+];
 
 export function PlanCanvas() {
   const containerRef = useRef<HTMLDivElement>(null);
   const wallDragRef = useRef({ id: '', x: 0, y: 0 });
+  const panRef = useRef<{
+    active: boolean;
+    startX: number;
+    startY: number;
+    origX: number;
+    origY: number;
+  } | null>(null);
   const [size, setSize] = useState({ width: 800, height: 600 });
   const [spacePan, setSpacePan] = useState(false);
+  const [panning, setPanning] = useState(false);
   const [hover, setHover] = useState<{ x: number; y: number } | null>(null);
   const [magnetAt, setMagnetAt] = useState<{ x: number; y: number } | null>(null);
+
   const {
     project,
     tool,
@@ -26,6 +44,7 @@ export function PlanCanvas() {
     scale,
     offset,
     select,
+    setTool,
     beginWall,
     finishWall,
     addOpeningAt,
@@ -57,6 +76,10 @@ export function PlanCanvas() {
         e.preventDefault();
         setSpacePan(true);
       }
+      if (e.key === 'v' || e.key === 'V') setTool('select');
+      if (e.key === 'w' || e.key === 'W') setTool('wall');
+      if (e.key === 'o' || e.key === 'O') setTool('window');
+      if (e.key === 'd' || e.key === 'D') setTool('door');
       if (e.key === 'Delete' || e.key === 'Backspace') {
         const tag = (e.target as HTMLElement)?.tagName;
         if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
@@ -73,7 +96,7 @@ export function PlanCanvas() {
       window.removeEventListener('keydown', onKeyDown);
       window.removeEventListener('keyup', onKeyUp);
     };
-  }, [deleteSelected]);
+  }, [deleteSelected, setTool]);
 
   const toWorld = useCallback(
     (sx: number, sy: number) => ({
@@ -92,12 +115,40 @@ export function PlanCanvas() {
     [project.furniture, project.activeFloor],
   );
 
-  const handleStagePointer = (e: KonvaEventObject<MouseEvent>) => {
-    if (spacePan) return;
+  const startPan = (clientX: number, clientY: number) => {
+    panRef.current = {
+      active: true,
+      startX: clientX,
+      startY: clientY,
+      origX: offset.x,
+      origY: offset.y,
+    };
+    setPanning(true);
+  };
+
+  const onStageMouseDown = (e: KonvaEventObject<MouseEvent>) => {
+    const evt = e.evt;
+    // RMB / MMB — always pan, never browser menu
+    if (evt.button === 1 || evt.button === 2 || spacePan) {
+      evt.preventDefault();
+      startPan(evt.clientX, evt.clientY);
+      return;
+    }
+    if (evt.button !== 0) return;
+
     const stage = e.target.getStage();
     if (!stage) return;
-    // Only empty-stage clicks start wall / clear selection
-    if (e.target !== stage) return;
+    const isEmpty = e.target === stage;
+
+    // Select tool + empty canvas → pan (natural planner navigation)
+    if (tool === 'select' && isEmpty) {
+      startPan(evt.clientX, evt.clientY);
+      select(null);
+      return;
+    }
+
+    if (!isEmpty) return;
+
     const pos = stage.getPointerPosition();
     if (!pos) return;
     const world = toWorld(pos.x, pos.y);
@@ -115,26 +166,65 @@ export function PlanCanvas() {
       addOpeningAt(world, 'door');
       return;
     }
-    if (tool === 'select') select(null);
   };
 
+  useEffect(() => {
+    const onMove = (e: MouseEvent) => {
+      const pan = panRef.current;
+      if (!pan?.active) return;
+      setOffset({
+        x: pan.origX + (e.clientX - pan.startX),
+        y: pan.origY + (e.clientY - pan.startY),
+      });
+    };
+    const onUp = () => {
+      if (panRef.current?.active) {
+        panRef.current = null;
+        setPanning(false);
+      }
+    };
+    window.addEventListener('mousemove', onMove);
+    window.addEventListener('mouseup', onUp);
+    return () => {
+      window.removeEventListener('mousemove', onMove);
+      window.removeEventListener('mouseup', onUp);
+    };
+  }, [setOffset]);
+
+  const activeHint = TOOLS.find((t) => t.id === tool)?.hint ?? '';
+
   return (
-    <div className="canvas-wrap" ref={containerRef}>
+    <div
+      className="canvas-wrap"
+      ref={containerRef}
+      onContextMenu={(e) => e.preventDefault()}
+    >
+      <div className="canvas-toolbar">
+        {TOOLS.map((t) => (
+          <button
+            key={t.id}
+            type="button"
+            className={tool === t.id ? 'canvas-tool active' : 'canvas-tool'}
+            onClick={() => setTool(t.id)}
+            title={t.hint}
+          >
+            {t.label}
+          </button>
+        ))}
+        <span className="canvas-tool-hint">{activeHint}</span>
+      </div>
+
       <Stage
         width={size.width}
         height={size.height}
-        onMouseDown={handleStagePointer}
+        onMouseDown={onStageMouseDown}
         onMouseMove={(e) => {
           const stage = e.target.getStage();
           const pos = stage?.getPointerPosition();
           if (!pos) return;
           const world = toWorld(pos.x, pos.y);
           if (tool === 'wall') {
-            const hit = magnetSnapPoint(
-              world,
-              project.walls.filter((w) => w.floor === project.activeFloor),
-              { freeWhenFar: true },
-            );
+            const hit = magnetSnapPoint(world, walls, { freeWhenFar: true });
             setHover(hit.kind === 'grid' ? world : hit.point);
             setMagnetAt(hit.kind === 'grid' ? null : hit.point);
           } else {
@@ -155,19 +245,9 @@ export function PlanCanvas() {
             y: pointer.y - world.y * newScale,
           });
         }}
-        draggable={spacePan}
-        onDragEnd={(e) => {
-          if (e.target.getClassName() === 'Stage') {
-            setOffset({
-              x: offset.x + e.target.x(),
-              y: offset.y + e.target.y(),
-            });
-            e.target.position({ x: 0, y: 0 });
-          }
-        }}
         style={{
-          cursor: spacePan
-            ? 'grab'
+          cursor: panning || spacePan
+            ? 'grabbing'
             : tool === 'wall' || tool === 'window' || tool === 'door'
               ? 'crosshair'
               : 'default',
@@ -194,7 +274,7 @@ export function PlanCanvas() {
                   strokeWidth={selected ? 220 : wall.thickness}
                   lineCap="square"
                   hitStrokeWidth={300}
-                  draggable={tool === 'select' && !spacePan}
+                  draggable={tool === 'select' && !spacePan && !panning}
                   onDragStart={(e) => {
                     wallDragRef.current = { id: wall.id, x: e.target.x(), y: e.target.y() };
                     select(wall.id);
@@ -206,6 +286,7 @@ export function PlanCanvas() {
                     if (Math.hypot(dx, dy) > 1) moveWallBy(wall.id, dx, dy);
                   }}
                   onMouseDown={(e) => {
+                    if (e.evt.button === 1 || e.evt.button === 2 || spacePan) return;
                     e.cancelBubble = true;
                     if (tool === 'window' || tool === 'door') {
                       const stage = e.target.getStage();
@@ -240,7 +321,8 @@ export function PlanCanvas() {
                   fill="#334155"
                   listening={false}
                 />
-                {selected && tool === 'select' &&
+                {selected &&
+                  tool === 'select' &&
                   (['a', 'b'] as const).map((end) => {
                     const p = wall[end];
                     return (
@@ -252,7 +334,7 @@ export function PlanCanvas() {
                         fill="#c45c26"
                         stroke="#fff"
                         strokeWidth={20}
-                        draggable={!spacePan}
+                        draggable={!spacePan && !panning}
                         onMouseDown={(e) => {
                           e.cancelBubble = true;
                         }}
@@ -289,6 +371,7 @@ export function PlanCanvas() {
                 <Group
                   key={o.id}
                   onMouseDown={(e) => {
+                    if (e.evt.button !== 0) return;
                     e.cancelBubble = true;
                     select(o.id);
                     if (tool === 'delete') deleteSelected();
@@ -326,7 +409,7 @@ export function PlanCanvas() {
                         fill="#2563eb"
                         stroke="#fff"
                         strokeWidth={16}
-                        draggable={!spacePan}
+                        draggable={!spacePan && !panning}
                         onMouseDown={(e) => {
                           e.cancelBubble = true;
                         }}
@@ -358,7 +441,7 @@ export function PlanCanvas() {
                             fill="#0f766e"
                             stroke="#fff"
                             strokeWidth={14}
-                            draggable={!spacePan}
+                            draggable={!spacePan && !panning}
                             onMouseDown={(e) => {
                               e.cancelBubble = true;
                             }}
@@ -397,9 +480,10 @@ export function PlanCanvas() {
               key={f.id}
               x={f.x}
               y={f.y}
-              draggable={tool === 'select' && !spacePan}
+              draggable={tool === 'select' && !spacePan && !panning}
               onDragEnd={(e) => moveFurniture(f.id, e.target.x(), e.target.y())}
               onMouseDown={(e) => {
+                if (e.evt.button !== 0) return;
                 e.cancelBubble = true;
                 select(f.id);
               }}
@@ -445,9 +529,10 @@ export function PlanCanvas() {
           )}
         </Layer>
       </Stage>
+
       <div className="canvas-hint">
-        Концы стен магнитятся к другим стенам (~{WALL_MAGNET_MM} мм) · Выбор: тянуть ручки · Space —
-        панорама · Delete — удалить
+        ЛКМ по пустому — панорама · Колесо — масштаб · ПКМ/СКМ — панорама · Концы стен: магнит +
+        без пересечений · V/W/O/D — инструменты
       </div>
     </div>
   );
