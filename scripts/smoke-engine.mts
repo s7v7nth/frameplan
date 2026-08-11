@@ -1,5 +1,6 @@
 import { DEFAULT_SETTINGS } from '../src/domain/materials';
 import { generateFrameModel } from '../src/engine/frameEngine';
+import { headerHeightMm } from '../src/engine/frameGeometry';
 import type { Project } from '../src/domain/types';
 
 const project: Project = {
@@ -24,6 +25,16 @@ const project: Project = {
     { id: 'w2', a: { x: 6000, y: 0 }, b: { x: 6000, y: 6000 }, thickness: 200, kind: 'exterior', height: 2700, floor: 0 },
     { id: 'w3', a: { x: 6000, y: 6000 }, b: { x: 0, y: 6000 }, thickness: 200, kind: 'exterior', height: 2700, floor: 0 },
     { id: 'w4', a: { x: 0, y: 6000 }, b: { x: 0, y: 0 }, thickness: 200, kind: 'exterior', height: 2700, floor: 0 },
+    // Mid-span partition T-junction onto w1 (SP 7.2.12) — offset not on stud OC
+    {
+      id: 'w5',
+      a: { x: 3200, y: 0 },
+      b: { x: 3200, y: 3000 },
+      thickness: 100,
+      kind: 'interior',
+      height: 2700,
+      floor: 0,
+    },
   ],
   openings: [
     { id: 'o1', wallId: 'w1', type: 'window', offset: 1500, width: 1200, height: 1400, sillHeight: 900 },
@@ -61,7 +72,7 @@ const report = {
     const headerBottom = Math.min(...headers.map((h) => h.elev!.z0));
     return jacks.every((j) => Math.abs(j.elev!.z1 - headerBottom) < 2);
   })(),
-  // Jacks sit outside clear opening (not inside)
+  // Jacks sit outside clear opening (not inside) — SP 7.2.13
   jacksOutsideOpening: (() => {
     const jacks = model.members.filter((m) => m.wallId === 'w1' && m.kind === 'jack_stud' && m.elev);
     // opening 1500..2700 — jack left should end at ~1500, jack right start at ~2700
@@ -69,7 +80,43 @@ const report = {
     const right = jacks.find((j) => j.elev!.s0 >= 2650);
     return Boolean(left && right);
   })(),
+  // SP: double top plate
+  doubleTopPlate: (() => {
+    const tops = model.members.filter((m) => m.wallId === 'w1' && m.kind === 'top_plate');
+    return tops.length >= 2;
+  })(),
+  // SP platform: bottom plate interrupted in door clear (2500..3400 on w3)
+  doorBottomPlateCut: (() => {
+    const plates = model.members.filter(
+      (m) => m.wallId === 'w3' && m.kind === 'bottom_plate' && m.label === 'Нижняя обвязка' && m.elev,
+    );
+    if (plates.length < 2) return false;
+    const coversDoor = plates.some((p) => {
+      const mid = (p.elev!.s0 + p.elev!.s1) / 2;
+      return mid > 2500 && mid < 3400;
+    });
+    return !coversDoor;
+  })(),
+  // Header height from SP B.13 for 1200 mm span, 1 floor → 150 mm
+  headerHeightSp: (() => {
+    const expected = headerHeightMm(1200, 1);
+    const headers = model.members.filter((m) => m.wallId === 'w1' && m.kind === 'header');
+    return headers.length >= 2 && headers.every((h) => h.sectionMm.depth === expected);
+  })(),
+  // Header spacer so assembly thickness = stud depth (7.2.14)
+  headerSpacer: model.members.some(
+    (m) => m.wallId === 'w1' && m.kind === 'blocking' && m.label.includes('Прокладка перемычки'),
+  ),
+  // SP 7.2.12 T-junction stud on host wall w1 near x=3000
+  partitionJunction: model.members.some(
+    (m) => m.wallId === 'w1' && m.label.includes('примыкания перегородки'),
+  ),
+  // Anchor note references SP 2.4 m
+  anchorSpNote: model.bom.some((b) => b.note?.includes('2,4') && b.name.includes('Анкер')),
   elevHasDims: model.projections.wallElevations.some((w) => w.svg.includes('text-anchor="middle"')),
+  elevHasNodeCallouts: model.projections.wallElevations.some(
+    (w) => w.svg.includes('>king<') && w.svg.includes('>jack<') && w.svg.includes('header 2×'),
+  ),
 };
 
 console.log(JSON.stringify(report, null, 2));
@@ -84,7 +131,14 @@ if (
   report.bomStockLines < 1 ||
   !report.jackHeaderBearing ||
   !report.jacksOutsideOpening ||
-  !report.elevHasDims
+  !report.doubleTopPlate ||
+  !report.doorBottomPlateCut ||
+  !report.headerHeightSp ||
+  !report.headerSpacer ||
+  !report.partitionJunction ||
+  !report.anchorSpNote ||
+  !report.elevHasDims ||
+  !report.elevHasNodeCallouts
 ) {
   console.error('Smoke failed', report);
   process.exit(1);

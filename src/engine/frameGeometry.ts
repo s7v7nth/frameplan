@@ -1,4 +1,10 @@
-import { pointAlongWall, uid, wallAngle, wallLength } from '../domain/geometry';
+import {
+  pointAlongWall,
+  projectPointOnSegment,
+  uid,
+  wallAngle,
+  wallLength,
+} from '../domain/geometry';
 import type {
   FloorLevel,
   FrameMember,
@@ -67,11 +73,34 @@ function plateSegment(
   };
 }
 
+type Occ = { s0: number; s1: number };
+
 /**
- * Wall framing per SP 31-105 platform framing.
- * Opening clear span = [offset, offset+width] between INNER faces of jacks:
+ * Header board height (on edge) from SP 31-105 app. B.13 (rigid sheathing).
+ * Approximates tables for roof+attic [+one floor], wall load ~1.5–2.0 kPa.
+ * Metric stock 50×150 / 200 / 250 / 300 ≈ 2×(38×140 / 184 / 235 / 286).
+ */
+export function headerHeightMm(clearWMm: number, floors: number): number {
+  const spanM = clearWMm / 1000;
+  if (floors >= 2) {
+    if (spanM <= 1.5) return 150;
+    if (spanM <= 1.9) return 200;
+    if (spanM <= 2.3) return 250;
+    return 300;
+  }
+  if (spanM <= 1.9) return 150;
+  if (spanM <= 2.3) return 200;
+  if (spanM <= 2.8) return 250;
+  return 300;
+}
+
+/**
+ * Wall framing per SP 31-105-2002 §7.2 platform framing.
+ * Opening clear span = [offset, offset+width] between INNER faces of jacks (7.2.13):
  *   [king][jack] | opening | [jack][king]
- * Header bears full width on both jacks.
+ * Header: two boards on edge bearing on both jacks (7.2.14); assembly thickness = stud depth.
+ * Bottom plate continuous under windows; interrupted in door clear opening.
+ * Double top plate (7.2.6).
  */
 export function buildWallMembers(
   wall: Wall,
@@ -88,8 +117,9 @@ export function buildWallMembers(
   const H = wall.height || settings.floorHeightMm;
   const section = settings.studSectionMm;
   const tw = section.width;
+  const studDepth = section.depth;
   const spacing = settings.studSpacingMm;
-  // Plate thickness in elevation ≈ stud width (board on flat)
+  // Plate thickness in elevation ≈ stud width (board on flat); plate width ≥ stud depth (7.2.7)
   const plateThk = tw;
   const topPlies = 2;
   const topH = plateThk * topPlies;
@@ -98,16 +128,36 @@ export function buildWallMembers(
   const studBot = bottomH;
   const ang = wallAngle(wall);
 
-  pushMember(members, lumber, {
-    kind: 'bottom_plate',
-    label: 'Нижняя обвязка',
-    sectionMm: section,
-    lengthMm: len,
-    floor: wall.floor,
-    wallId: wall.id,
-    plan: plateSegment(wall, 0, len, 0),
-    elev: { s0: 0, s1: len, z0: 0, z1: bottomH },
-  });
+  // Door clear gaps — bottom plate is cut between jacks (platform framing)
+  const doorGaps: Occ[] = [];
+  for (const o of wallOpenings) {
+    if (o.type !== 'door') continue;
+    const clearL = Math.max(0, Math.round(o.offset));
+    const clearR = Math.min(len, Math.round(o.offset + o.width));
+    if (clearR - clearL >= 300) doorGaps.push({ s0: clearL, s1: clearR });
+  }
+
+  const emitBottomPlate = (s0: number, s1: number) => {
+    const L = Math.round(s1 - s0);
+    if (L < 40) return;
+    pushMember(members, lumber, {
+      kind: 'bottom_plate',
+      label: 'Нижняя обвязка',
+      sectionMm: section,
+      lengthMm: L,
+      floor: wall.floor,
+      wallId: wall.id,
+      plan: plateSegment(wall, s0, s1, 0),
+      elev: { s0, s1, z0: 0, z1: bottomH },
+    });
+  };
+
+  let plateCursor = 0;
+  for (const g of doorGaps) {
+    emitBottomPlate(plateCursor, g.s0);
+    plateCursor = g.s1;
+  }
+  emitBottomPlate(plateCursor, len);
 
   for (let ply = 0; ply < topPlies; ply++) {
     pushMember(members, lumber, {
@@ -127,7 +177,6 @@ export function buildWallMembers(
     });
   }
 
-  type Occ = { s0: number; s1: number };
   const blocked: Occ[] = [];
 
   const addPost = (
@@ -157,7 +206,7 @@ export function buildWallMembers(
     const clearW = clearR - clearL;
     if (clearW < 300) continue;
 
-    // [king][jack] | clear | [jack][king]
+    // [king][jack] | clear | [jack][king] — SP 7.2.13 double studs at openings
     let jackL = clearL - tw;
     let jackR = clearR;
     let kingL = clearL - 2 * tw;
@@ -175,29 +224,30 @@ export function buildWallMembers(
     jackL = Math.max(kingL + tw, Math.min(jackL, clearL - tw));
     jackR = Math.min(kingR - tw, Math.max(jackR, clearR));
 
-    // Header size by span (SP table simplified)
-    const headerDepth = clearW > 1500 ? 250 : clearW > 900 ? 200 : 150;
+    // Header height from SP app. B.13; thickness of assembly = stud depth (7.2.14)
+    const headerDepth = headerHeightMm(clearW, settings.floors);
     const headerBottom =
       o.type === 'door' ? Math.min(o.height, studTop - headerDepth) : o.sillHeight + o.height;
     const headerTop = Math.min(studTop, headerBottom + headerDepth);
 
-    // Kings — continuous floor-to-top-plate
+    // Kings — continuous bottom plate to top plate (outer of the pair)
     addPost('king_stud', 'Королевская стойка', kingL, studBot, studTop);
     addPost('king_stud', 'Королевская стойка', kingR, studBot, studTop);
 
-    // Jacks — from bottom plate to underside of header (bear the header)
+    // Jacks — from bottom plate to underside of header (inner, bear the header)
     addPost('jack_stud', 'Опорная стойка (джек)', jackL, studBot, headerBottom);
     addPost('jack_stud', 'Опорная стойка (джек)', jackR, studBot, headerBottom);
 
-    // Double header on edge (2 boards), bears on both jacks
+    // Double header on edge (2 boards), bears on both jacks; spacer if 2×width < stud depth
     const headerS0 = jackL;
     const headerS1 = jackR + tw;
+    const headerLen = Math.round(headerS1 - headerS0);
     for (let ply = 0; ply < 2; ply++) {
       pushMember(members, lumber, {
         kind: 'header',
         label: `Перемычка ${clearW} мм (${ply + 1}/2)`,
         sectionMm: { width: tw, depth: headerDepth },
-        lengthMm: Math.round(headerS1 - headerS0),
+        lengthMm: headerLen,
         floor: wall.floor,
         wallId: wall.id,
         plan: plateSegment(wall, headerS0, headerS1, 18 + ply * 10),
@@ -208,6 +258,19 @@ export function buildWallMembers(
           z0: headerBottom,
           z1: headerTop,
         },
+      });
+    }
+    const spacerThk = studDepth - 2 * tw;
+    if (spacerThk >= 20) {
+      pushMember(members, lumber, {
+        kind: 'blocking',
+        label: `Прокладка перемычки (${spacerThk} мм, толщина = глубина стойки)`,
+        sectionMm: { width: spacerThk, depth: headerDepth },
+        lengthMm: headerLen,
+        floor: wall.floor,
+        wallId: wall.id,
+        plan: plateSegment(wall, headerS0, headerS1, 28),
+        elev: { s0: headerS0, s1: headerS1, z0: headerBottom, z1: headerTop },
       });
     }
 
@@ -276,7 +339,10 @@ function near(a: Point, b: Point, eps = 8): boolean {
   return Math.hypot(a.x - b.x, a.y - b.y) <= eps;
 }
 
-/** California corner: 2 studs on primary wall + 1 abutting stud on secondary. */
+/**
+ * Exterior/interior corner: California-style 2+1 studs (SP 7.2.11 — two or three studs).
+ * Extra stud on secondary wall provides nailing for interior sheathing.
+ */
 export function buildCaliforniaCorners(
   walls: Wall[],
   settings: ProjectSettings,
@@ -350,6 +416,73 @@ export function buildCaliforniaCorners(
   return skip;
 }
 
+/**
+ * SP 7.2.12 — mid-span T-junction of a partition/wall end onto a continuous wall:
+ * add a full-height stud on the continuous wall at the junction for sheathing attachment.
+ */
+export function buildPartitionJunctions(
+  walls: Wall[],
+  settings: ProjectSettings,
+  members: FrameMember[],
+  lumber: LumberPiece[],
+) {
+  const section = settings.studSectionMm;
+  const tw = section.width;
+  const plateThk = tw;
+  const bottomH = plateThk;
+  const topH = plateThk * 2;
+  const eps = 12;
+
+  for (const branch of walls) {
+    for (const end of ['a', 'b'] as const) {
+      const pt = end === 'a' ? branch.a : branch.b;
+      // Skip if this end already meets another wall endpoint (corner handled elsewhere)
+      const meetsCorner = walls.some(
+        (w) =>
+          w.id !== branch.id &&
+          w.floor === branch.floor &&
+          (Math.hypot(w.a.x - pt.x, w.a.y - pt.y) <= eps ||
+            Math.hypot(w.b.x - pt.x, w.b.y - pt.y) <= eps),
+      );
+      if (meetsCorner) continue;
+
+      for (const host of walls) {
+        if (host.id === branch.id || host.floor !== branch.floor) continue;
+        const hit = projectPointOnSegment(pt, host.a, host.b);
+        if (hit.dist > eps) continue;
+        // Mid-span only (not near host ends)
+        const hostLen = wallLength(host);
+        const s = hit.t * hostLen;
+        if (s < tw * 2 || s > hostLen - tw * 2) continue;
+
+        // Avoid duplicating an existing stud/king/jack at this s
+        const already = members.some(
+          (m) =>
+            m.wallId === host.id &&
+            m.elev &&
+            ['stud', 'king_stud', 'jack_stud'].includes(m.kind) &&
+            Math.abs(m.elev.s0 - Math.round(s - tw / 2)) < tw,
+        );
+        if (already) continue;
+
+        const H = host.height || settings.floorHeightMm;
+        const sClamped = Math.max(0, Math.min(hostLen - tw, Math.round(s - tw / 2)));
+        const p = along(host, sClamped + tw / 2);
+        pushMember(members, lumber, {
+          kind: 'stud',
+          label: 'Стойка примыкания перегородки (СП 7.2.12)',
+          sectionMm: section,
+          lengthMm: H - bottomH - topH,
+          floor: host.floor,
+          wallId: host.id,
+          planMark: { x: p.x, y: p.y, angle: wallAngle(host) },
+          elev: { s0: sClamped, s1: sClamped + tw, z0: bottomH, z1: H - topH },
+        });
+      }
+    }
+  }
+}
+
 export function prepareWallSkipFlags(walls: Wall[]): Map<string, { start: boolean; end: boolean }> {
   const skip = new Map<string, { start: boolean; end: boolean }>();
   for (const w of walls) skip.set(w.id, { start: false, end: false });
@@ -405,6 +538,7 @@ export function buildFloorMembers(
   if (floor === 0) {
     for (const wall of refWalls) {
       const L = Math.round(wallLength(wall));
+      // SP 6.2.8.4 — sill (опорная доска) not less than 38×88; use 50×150 stock
       pushMember(members, lumber, {
         kind: 'sill',
         label: 'Лежень (обвязка фундамента)',
@@ -690,7 +824,16 @@ export function renderWallElevationDrawing(
   g += `<rect x="${svgN(X(0))}" y="${svgN(Y(wallH))}" width="${svgN(L * scaleX)}" height="${svgN(wallH * scaleY)}" fill="#fff" stroke="${ink}" stroke-width="1.6"/>`;
 
   const order = (k: string) =>
-    ({ bottom_plate: 0, top_plate: 1, cripple: 2, stud: 3, king_stud: 4, jack_stud: 5, header: 6 })[k] ?? 3;
+    ({
+      bottom_plate: 0,
+      top_plate: 1,
+      cripple: 2,
+      stud: 3,
+      king_stud: 4,
+      jack_stud: 5,
+      blocking: 5.5,
+      header: 6,
+    })[k] ?? 3;
 
   // Draw headers once (dedupe overlapping plies)
   const drawnHeaders = new Set<string>();
@@ -752,15 +895,41 @@ export function renderWallElevationDrawing(
     }
   }
 
-  // Node callouts for first opening (constructor notes)
+  // Node callouts for first opening — positions from generated jack/king geometry
   if (wallOpenings[0]) {
     const o = wallOpenings[0];
-    const tw = 50;
-    const notes = [
-      { x: X(o.offset - 2 * tw), y: Y(wallH * 0.55), t: 'king' },
-      { x: X(o.offset - tw), y: Y(wallH * 0.45), t: 'jack' },
-      { x: X(o.offset + o.width / 2), y: Y((o.type === 'door' ? o.height : o.sillHeight + o.height) + 80), t: 'header 2×' },
-    ];
+    const kings = mWall.filter((m) => m.kind === 'king_stud' && m.elev);
+    const jacks = mWall.filter((m) => m.kind === 'jack_stud' && m.elev);
+    const headers = mWall.filter((m) => m.kind === 'header' && m.elev);
+    const leftKing = kings
+      .filter((m) => m.elev!.s1 <= o.offset + 1)
+      .sort((a, b) => b.elev!.s0 - a.elev!.s0)[0];
+    const leftJack = jacks
+      .filter((m) => m.elev!.s1 <= o.offset + 1)
+      .sort((a, b) => b.elev!.s0 - a.elev!.s0)[0];
+    const hdr = headers[0];
+    const notes: { x: number; y: number; t: string }[] = [];
+    if (leftKing) {
+      notes.push({
+        x: X((leftKing.elev!.s0 + leftKing.elev!.s1) / 2),
+        y: Y(wallH * 0.55),
+        t: 'king',
+      });
+    }
+    if (leftJack) {
+      notes.push({
+        x: X((leftJack.elev!.s0 + leftJack.elev!.s1) / 2),
+        y: Y(wallH * 0.45),
+        t: 'jack',
+      });
+    }
+    if (hdr) {
+      notes.push({
+        x: X((hdr.elev!.s0 + hdr.elev!.s1) / 2),
+        y: Y(hdr.elev!.z1 + 40),
+        t: 'header 2×',
+      });
+    }
     for (const n of notes) {
       g += `<circle cx="${svgN(n.x)}" cy="${svgN(n.y)}" r="3" fill="${ink}"/>`;
       g += `<text x="${svgN(n.x + 6)}" y="${svgN(n.y - 4)}" font-family="IBM Plex Sans,Manrope,sans-serif" font-size="10" fill="${ink}">${n.t}</text>`;
@@ -769,7 +938,7 @@ export function renderWallElevationDrawing(
 
   // Legend
   g += `<g font-family="IBM Plex Sans,Manrope,sans-serif" font-size="9" fill="#4b5563">
-    <text x="${marginL}" y="${svgH - 10}">СП 31-105: нижняя обвязка · стойки · двойная верхняя обвязка · king/jack/header у проёмов · калифорнийский угол на стыках стен</text>
+    <text x="${marginL}" y="${svgH - 10}">СП 31-105 §7.2: нижняя обвязка · стойки · двойная верхняя обвязка · king/jack/header у проёмов · калифорнийский угол · примыкания перегородок</text>
   </g>`;
 
   const title = `Стена ${wallIndex + 1} (${(L / 1000).toFixed(2)} м)`;

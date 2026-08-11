@@ -22,6 +22,7 @@ import type {
 import {
   buildCaliforniaCorners,
   buildFloorMembers,
+  buildPartitionJunctions,
   buildRoofMembers,
   buildWallMembers,
   prepareWallSkipFlags,
@@ -476,6 +477,7 @@ export function generateFrameModel(project: Project): FrameModel {
     );
   }
   buildCaliforniaCorners(wallsToFrame, project.settings, members, lumber);
+  buildPartitionJunctions(wallsToFrame, project.settings, members, lumber);
 
   buildRoofMembers(project, members, lumber);
   generateSheathing(project, sheets);
