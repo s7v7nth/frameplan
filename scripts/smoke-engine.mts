@@ -52,8 +52,24 @@ const report = {
   stock6000: stock6,
   hasBoardCuts,
   bomStockLines: bomStock.length,
-  sampleBoard: model.cutting[0]?.boards[0],
-  buyQty: bomStock.map((b) => ({ name: b.name, qty: b.qty })),
+  // Jacks must support header: jack top == header bottom on same wall
+  jackHeaderBearing: (() => {
+    const wallId = 'w1';
+    const jacks = model.members.filter((m) => m.wallId === wallId && m.kind === 'jack_stud' && m.elev);
+    const headers = model.members.filter((m) => m.wallId === wallId && m.kind === 'header' && m.elev);
+    if (!jacks.length || !headers.length) return false;
+    const headerBottom = Math.min(...headers.map((h) => h.elev!.z0));
+    return jacks.every((j) => Math.abs(j.elev!.z1 - headerBottom) < 2);
+  })(),
+  // Jacks sit outside clear opening (not inside)
+  jacksOutsideOpening: (() => {
+    const jacks = model.members.filter((m) => m.wallId === 'w1' && m.kind === 'jack_stud' && m.elev);
+    // opening 1500..2700 — jack left should end at ~1500, jack right start at ~2700
+    const left = jacks.find((j) => j.elev!.s1 <= 1550);
+    const right = jacks.find((j) => j.elev!.s0 >= 2650);
+    return Boolean(left && right);
+  })(),
+  elevHasDims: model.projections.wallElevations.some((w) => w.svg.includes('text-anchor="middle"')),
 };
 
 console.log(JSON.stringify(report, null, 2));
@@ -65,8 +81,11 @@ if (
   report.california < 8 ||
   !report.stock6000 ||
   !report.hasBoardCuts ||
-  report.bomStockLines < 1
+  report.bomStockLines < 1 ||
+  !report.jackHeaderBearing ||
+  !report.jacksOutsideOpening ||
+  !report.elevHasDims
 ) {
-  console.error('Smoke failed');
+  console.error('Smoke failed', report);
   process.exit(1);
 }

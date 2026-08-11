@@ -307,7 +307,11 @@ select {
 }
 
 .svg-frame.tall {
-  height: 420px;
+  height: 520px;
+}
+
+.elev-gallery .svg-frame {
+  height: 480px;
 }
 
 .kind-chips {
