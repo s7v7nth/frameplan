@@ -69,11 +69,11 @@ export function CanvasChrome({
         )}
         <span className="canvas-tool-hint">{activeHint}</span>
         <div className="canvas-history">
-          <button type="button" className="canvas-tool" disabled={pastLen === 0} onClick={undo} title="Ctrl+Z">
-            ↶
+          <button type="button" className="canvas-tool" disabled={pastLen === 0} onClick={undo} title="Отменить (Ctrl+Z)">
+            Отм.
           </button>
-          <button type="button" className="canvas-tool" disabled={futureLen === 0} onClick={redo} title="Ctrl+Shift+Z">
-            ↷
+          <button type="button" className="canvas-tool" disabled={futureLen === 0} onClick={redo} title="Вернуть (Ctrl+Shift+Z)">
+            Верн.
           </button>
         </div>
       </div>
