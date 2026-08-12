@@ -9,6 +9,7 @@ import {
   resolveDraftSnap,
   wallSegmentCollides,
   finalizeWallJoins,
+  resolveTranslateSnap,
   gridStepForScale,
 } from '../domain/geometry';
 import type {
@@ -88,7 +89,14 @@ interface EditorState {
   addFurniture: (kind: string) => void;
   moveFurniture: (id: string, x: number, y: number) => void;
   moveWallEndpoint: (id: string, end: 'a' | 'b', point: Point) => void;
-  moveWallBy: (id: string, dx: number, dy: number) => void;
+  /** Returns false when move rejected (collision). */
+  moveWallBy: (id: string, dx: number, dy: number) => boolean;
+  /** Preview rigid translate — for live drag feedback. */
+  previewMoveWallBy: (
+    id: string,
+    dx: number,
+    dy: number,
+  ) => { dx: number; dy: number; ok: boolean; kind: string };
   /** Returns snapped point for UI feedback while dragging */
   previewEndpointSnap: (id: string, end: 'a' | 'b', point: Point) => Point;
   moveOpening: (id: string, offset: number) => void;
@@ -190,7 +198,9 @@ export const useEditorStore = create<EditorState>()(
           height: project.settings.floorHeightMm,
           floor: project.activeFloor,
         };
-        const joined = finalizeWallJoins([...project.walls, wall], project.activeFloor);
+        const joined = finalizeWallJoins([...project.walls, wall], project.activeFloor, {
+          mutableWallIds: [wall.id],
+        });
         set({
           draftStart: null,
           selectedId: wall.id,
@@ -309,14 +319,7 @@ export const useEditorStore = create<EditorState>()(
           });
           let p = hit.point;
           if (wallSegmentCollides(fixed, p, others)) {
-            if (
-              (hit.kind === 'endpoint' || hit.kind === 'endface' || hit.kind === 'face') &&
-              !wallSegmentCollides(fixed, hit.point, others)
-            ) {
-              p = hit.point;
-            } else {
-              return s;
-            }
+            return s; // keep previous — canvas shows reject via preview
           }
           if (Math.hypot(p.x - fixed.x, p.y - fixed.y) < 200) return s;
           const walls = s.project.walls.map((w) =>
@@ -325,7 +328,10 @@ export const useEditorStore = create<EditorState>()(
           return {
             project: touch({
               ...s.project,
-              walls: finalizeWallJoins(walls, s.project.activeFloor),
+              // Only adjust this wall — never warp the opposite / host walls
+              walls: finalizeWallJoins(walls, s.project.activeFloor, {
+                mutableWallIds: [id],
+              }),
             }),
           };
         }),
@@ -346,57 +352,36 @@ export const useEditorStore = create<EditorState>()(
         if (wallSegmentCollides(fixed, hit.point, others)) return wall[end];
         return hit.point;
       },
-      moveWallBy: (id, dx, dy) =>
-        set((s) => {
-          const wall = s.project.walls.find((w) => w.id === id);
-          if (!wall) return s;
-          const others = s.project.walls.filter(
-            (w) => w.floor === s.project.activeFloor && w.id !== id,
-          );
-          let adx = dx;
-          let ady = dy;
-          const candidates: { dx: number; dy: number; dist: number }[] = [];
-          for (const end of ['a', 'b'] as const) {
-            const raw = { x: wall[end].x + dx, y: wall[end].y + dy };
-            const hit = resolveDraftSnap(raw, others, {
-              scale: s.scale,
-              selfThickness: wall.thickness,
-            });
-            if (hit.kind !== 'grid') {
-              candidates.push({
-                dx: hit.point.x - wall[end].x,
-                dy: hit.point.y - wall[end].y,
-                dist: hit.strength,
-              });
-            }
-          }
-          if (candidates.length) {
-            candidates.sort((a, b) => a.dist - b.dist);
-            adx = candidates[0].dx;
-            ady = candidates[0].dy;
-          } else {
-            // Keep translation on grid
-            const snapped = resolveDraftSnap(
-              { x: wall.a.x + dx, y: wall.a.y + dy },
-              others,
-              { scale: s.scale, selfThickness: wall.thickness },
-            ).point;
-            adx = snapped.x - wall.a.x;
-            ady = snapped.y - wall.a.y;
-          }
-          const nextA = { x: Math.round(wall.a.x + adx), y: Math.round(wall.a.y + ady) };
-          const nextB = { x: Math.round(wall.b.x + adx), y: Math.round(wall.b.y + ady) };
-          if (wallSegmentCollides(nextA, nextB, others)) return s;
-          const walls = s.project.walls.map((w) =>
-            w.id === id ? { ...w, a: nextA, b: nextB } : w,
-          );
-          return {
-            project: touch({
-              ...s.project,
-              walls: finalizeWallJoins(walls, s.project.activeFloor),
-            }),
-          };
-        }),
+      previewMoveWallBy: (id, dx, dy) => {
+        const s = get();
+        const wall = s.project.walls.find((w) => w.id === id);
+        if (!wall) return { dx, dy, ok: false, kind: 'grid' };
+        const others = s.project.walls.filter(
+          (w) => w.floor === s.project.activeFloor && w.id !== id,
+        );
+        const snap = resolveTranslateSnap(wall, dx, dy, others, { scale: s.scale });
+        return { dx: snap.dx, dy: snap.dy, ok: snap.ok, kind: snap.kind };
+      },
+      moveWallBy: (id, dx, dy) => {
+        const s = get();
+        const wall = s.project.walls.find((w) => w.id === id);
+        if (!wall) return false;
+        const others = s.project.walls.filter(
+          (w) => w.floor === s.project.activeFloor && w.id !== id,
+        );
+        const snap = resolveTranslateSnap(wall, dx, dy, others, { scale: s.scale });
+        if (!snap.ok) return false;
+        const nextA = { x: Math.round(wall.a.x + snap.dx), y: Math.round(wall.a.y + snap.dy) };
+        const nextB = { x: Math.round(wall.b.x + snap.dx), y: Math.round(wall.b.y + snap.dy) };
+        const walls = s.project.walls.map((w) =>
+          w.id === id ? { ...w, a: nextA, b: nextB } : w,
+        );
+        // Rigid move only — do not re-join / bend neighbouring walls
+        set({
+          project: touch({ ...s.project, walls }),
+        });
+        return true;
+      },
       moveOpening: (id, offset) =>
         set((s) => {
           const opening = s.project.openings.find((o) => o.id === id);

@@ -11,6 +11,8 @@ import {
   gridStepForScale,
   wallPolygonPoints,
   wallCenterlinePoints,
+  orthoCornerMarkers,
+  draftOrthoMarker,
   type MagnetHit,
 } from '../domain/geometry';
 import { APP_BUILD } from '../version';
@@ -27,8 +29,17 @@ const TOOLS: { id: Tool; label: string; hint: string }[] = [
 
 export function PlanCanvas() {
   const containerRef = useRef<HTMLDivElement>(null);
-  const wallDragRef = useRef({ id: '', x: 0, y: 0 });
+  const wallDragRef = useRef({
+    id: '',
+    x: 0,
+    y: 0,
+    lastDx: 0,
+    lastDy: 0,
+    invalid: false,
+  });
   const snapPrevRef = useRef<MagnetHit | null>(null);
+  const [dragInvalid, setDragInvalid] = useState(false);
+  const [dragRejectFlash, setDragRejectFlash] = useState(false);
   const panRef = useRef<{
     active: boolean;
     startX: number;
@@ -62,6 +73,7 @@ export function PlanCanvas() {
     moveFurniture,
     moveWallEndpoint,
     moveWallBy,
+    previewMoveWallBy,
     moveOpening,
     updateOpening,
     previewEndpointSnap,
@@ -134,6 +146,12 @@ export function PlanCanvas() {
     () => project.furniture.filter((f) => f.floor === project.activeFloor),
     [project.furniture, project.activeFloor],
   );
+  const orthoMarks = useMemo(
+    () => orthoCornerMarkers(project.walls, project.activeFloor),
+    [project.walls, project.activeFloor],
+  );
+  const draftOrtho =
+    draftStart && hover && tool === 'wall' ? draftOrthoMarker(draftStart, hover) : null;
 
   const startPan = (clientX: number, clientY: number) => {
     panRef.current = {
@@ -302,12 +320,22 @@ export function PlanCanvas() {
           {walls.map((wall) => {
             const selected = selectedId === wall.id;
             const poly = wallPolygonPoints(wall, walls);
-            const fill = selected
-              ? '#c45c26'
-              : wall.kind === 'exterior'
-                ? '#1f3a2e'
-                : '#64748b';
-            const stroke = selected ? '#9a3412' : wall.kind === 'exterior' ? '#14231c' : '#475569';
+            const fill =
+              selected && (dragInvalid || dragRejectFlash)
+                ? '#dc2626'
+                : selected
+                  ? '#c45c26'
+                  : wall.kind === 'exterior'
+                    ? '#1f3a2e'
+                    : '#64748b';
+            const stroke =
+              selected && (dragInvalid || dragRejectFlash)
+                ? '#991b1b'
+                : selected
+                  ? '#9a3412'
+                  : wall.kind === 'exterior'
+                    ? '#14231c'
+                    : '#475569';
             const center = wallCenterlinePoints(wall, walls);
             return (
               <Group key={wall.id}>
@@ -321,16 +349,72 @@ export function PlanCanvas() {
                   lineJoin="miter"
                   miterLimit={2}
                   perfectDrawEnabled={false}
+                  opacity={selected && dragInvalid ? 0.7 : 1}
                   draggable={tool === 'select' && !spacePan && !panning}
                   onDragStart={(e) => {
-                    wallDragRef.current = { id: wall.id, x: e.target.x(), y: e.target.y() };
+                    wallDragRef.current = {
+                      id: wall.id,
+                      x: e.target.x(),
+                      y: e.target.y(),
+                      lastDx: 0,
+                      lastDy: 0,
+                      invalid: false,
+                    };
+                    setDragInvalid(false);
+                    setDragRejectFlash(false);
                     select(wall.id);
                   }}
+                  onDragMove={(e) => {
+                    const rawDx = e.target.x() - wallDragRef.current.x;
+                    const rawDy = e.target.y() - wallDragRef.current.y;
+                    const preview = previewMoveWallBy(wall.id, rawDx, rawDy);
+                    if (preview.ok) {
+                      wallDragRef.current.lastDx = preview.dx;
+                      wallDragRef.current.lastDy = preview.dy;
+                      wallDragRef.current.invalid = false;
+                      setDragInvalid(false);
+                      e.target.position({
+                        x: wallDragRef.current.x + preview.dx,
+                        y: wallDragRef.current.y + preview.dy,
+                      });
+                      if (preview.kind !== 'grid') {
+                        setMagnetAt({
+                          x: wall.a.x + preview.dx,
+                          y: wall.a.y + preview.dy,
+                          kind: preview.kind as MagnetHit['kind'],
+                        });
+                      } else {
+                        setMagnetAt(null);
+                      }
+                    } else {
+                      wallDragRef.current.invalid = true;
+                      setDragInvalid(true);
+                      e.target.position({
+                        x: wallDragRef.current.x + wallDragRef.current.lastDx,
+                        y: wallDragRef.current.y + wallDragRef.current.lastDy,
+                      });
+                      setMagnetAt(null);
+                    }
+                  }}
                   onDragEnd={(e) => {
-                    const dx = e.target.x() - wallDragRef.current.x;
-                    const dy = e.target.y() - wallDragRef.current.y;
+                    const dx = wallDragRef.current.lastDx;
+                    const dy = wallDragRef.current.lastDy;
+                    const attemptedInvalid = wallDragRef.current.invalid;
                     e.target.position({ x: 0, y: 0 });
-                    if (Math.hypot(dx, dy) > 1) moveWallBy(wall.id, dx, dy);
+                    setMagnetAt(null);
+                    setDragInvalid(false);
+                    if (Math.hypot(dx, dy) <= 1) {
+                      if (attemptedInvalid) {
+                        setDragRejectFlash(true);
+                        window.setTimeout(() => setDragRejectFlash(false), 450);
+                      }
+                      return;
+                    }
+                    const ok = moveWallBy(wall.id, dx, dy);
+                    if (!ok || attemptedInvalid) {
+                      setDragRejectFlash(true);
+                      window.setTimeout(() => setDragRejectFlash(false), 450);
+                    }
                   }}
                   onMouseDown={(e) => {
                     if (e.evt.button === 1 || e.evt.button === 2 || spacePan) return;
@@ -560,7 +644,54 @@ export function PlanCanvas() {
             </Group>
           ))}
 
-          {magnetAt && tool === 'wall' && (
+          {orthoMarks.map((m, i) => {
+            const c = Math.cos(m.angle);
+            const s = Math.sin(m.angle);
+            const sz = m.size;
+            // CAD-style right-angle square sitting in the corner
+            const p0 = { x: m.x, y: m.y };
+            const p1 = { x: m.x + c * sz, y: m.y + s * sz };
+            const p2 = {
+              x: m.x + c * sz - s * sz,
+              y: m.y + s * sz + c * sz,
+            };
+            const p3 = { x: m.x - s * sz, y: m.y + c * sz };
+            return (
+              <Line
+                key={`ortho-${i}`}
+                points={[p0.x, p0.y, p1.x, p1.y, p2.x, p2.y, p3.x, p3.y]}
+                stroke="#2563eb"
+                strokeWidth={18}
+                listening={false}
+                opacity={0.85}
+              />
+            );
+          })}
+
+          {draftOrtho && (
+            <Line
+              points={[
+                draftOrtho.x,
+                draftOrtho.y,
+                draftOrtho.x + Math.cos(draftOrtho.angle) * draftOrtho.size,
+                draftOrtho.y + Math.sin(draftOrtho.angle) * draftOrtho.size,
+                draftOrtho.x +
+                  Math.cos(draftOrtho.angle) * draftOrtho.size -
+                  Math.sin(draftOrtho.angle) * draftOrtho.size,
+                draftOrtho.y +
+                  Math.sin(draftOrtho.angle) * draftOrtho.size +
+                  Math.cos(draftOrtho.angle) * draftOrtho.size,
+                draftOrtho.x - Math.sin(draftOrtho.angle) * draftOrtho.size,
+                draftOrtho.y + Math.cos(draftOrtho.angle) * draftOrtho.size,
+              ]}
+              stroke="#2563eb"
+              strokeWidth={22}
+              listening={false}
+              opacity={0.9}
+            />
+          )}
+
+          {magnetAt && (tool === 'wall' || tool === 'select') && (
             <Group listening={false}>
               {magnetAt.kind === 'grid' ? (
                 <>
@@ -619,7 +750,8 @@ export function PlanCanvas() {
       </Stage>
 
       <div className="canvas-hint">
-        build {APP_BUILD} · сетка {gridMm} мм · магнит к грани/торцу · V/W/O/D
+        build {APP_BUILD} · сетка {gridMm} мм · грань/торец · ∟ угол
+        {dragRejectFlash ? ' · нельзя сюда' : ''} · V/W/O/D
       </div>
     </div>
   );
