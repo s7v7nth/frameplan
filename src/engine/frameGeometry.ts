@@ -320,7 +320,8 @@ export function buildWallMembers(
   }
 }
 
-function near(a: Point, b: Point, eps = 8): boolean {
+/** Shared corner tolerance — must cover magnet/grid rounding so California nodes assemble. */
+function near(a: Point, b: Point, eps = 25): boolean {
   return Math.hypot(a.x - b.x, a.y - b.y) <= eps;
 }
 
@@ -416,7 +417,7 @@ export function buildPartitionJunctions(
   const plateThk = tw;
   const bottomH = plateThk;
   const topH = plateThk * 2;
-  const eps = 12;
+  const eps = 25;
 
   for (const branch of walls) {
     for (const end of ['a', 'b'] as const) {

@@ -32,6 +32,16 @@ export function snapPoint(p: Point, grid = 100): Point {
 /** Default magnet radius in mm — endpoint snaps when within this distance. */
 export const WALL_MAGNET_MM = 250;
 
+/**
+ * How much closer a segment hit must be than an endpoint to beat it.
+ * Without this bias, approaching a corner perpendicularly snaps "into" the
+ * wall body (segment projection) instead of butt-joining tip-to-tip.
+ */
+export const ENDPOINT_BIAS_MM = 220;
+
+/** Along-wall distance from a segment hit to an end → promote to that endpoint. */
+export const END_PROMOTE_MM = 300;
+
 export type MagnetHit = {
   point: Point;
   kind: 'endpoint' | 'segment' | 'grid';
@@ -40,10 +50,13 @@ export type MagnetHit = {
 };
 
 /**
- * Magnetic snap for wall endpoints:
- * 1) other wall endpoints (strongest)
- * 2) projection onto other wall segments
- * 3) grid (weakest, always available)
+ * Magnetic snap for wall endpoints (centerline model):
+ * 1) other wall endpoints — preferred for corners (butt / tip-to-tip)
+ * 2) projection onto other wall segments — mid-span T-junctions only
+ * 3) grid (weakest)
+ *
+ * Near-end segment projections are promoted to endpoints so corners join
+ * tip-to-tip and California-corner nodes can detect shared points.
  */
 export function magnetSnapPoint(
   p: Point,
@@ -54,26 +67,51 @@ export function magnetSnapPoint(
     grid?: number;
     /** Prefer free movement — only magnet, no forced grid when far */
     freeWhenFar?: boolean;
+    /** Extra preference for endpoints over segments (mm) */
+    endpointBiasMm?: number;
   } = {},
 ): MagnetHit {
   const magnetMm = opts.magnetMm ?? WALL_MAGNET_MM;
   const grid = opts.grid ?? 100;
+  const endpointBias = opts.endpointBiasMm ?? ENDPOINT_BIAS_MM;
 
   let bestEnd: MagnetHit | null = null;
   let bestSeg: MagnetHit | null = null;
 
+  const considerEndpoint = (point: Point, wallId: string, d: number, withinMagnet: boolean) => {
+    if (withinMagnet && d > magnetMm) return;
+    if (!bestEnd || d < bestEnd.strength) {
+      bestEnd = { point: { ...point }, kind: 'endpoint', wallId, strength: d };
+    }
+  };
+
   for (const wall of walls) {
     if (opts.ignoreWallId && wall.id === opts.ignoreWallId) continue;
 
-    for (const end of [wall.a, wall.b]) {
-      const d = dist(p, end);
-      if (d <= magnetMm && (!bestEnd || d < bestEnd.strength)) {
-        bestEnd = { point: { ...end }, kind: 'endpoint', wallId: wall.id, strength: d };
-      }
-    }
+    considerEndpoint(wall.a, wall.id, dist(p, wall.a), true);
+    considerEndpoint(wall.b, wall.id, dist(p, wall.b), true);
 
     const hit = projectPointOnSegment(p, wall.a, wall.b);
-    if (hit.dist <= magnetMm && (!bestSeg || hit.dist < bestSeg.strength)) {
+    if (hit.dist > magnetMm) continue;
+
+    const len = wallLength(wall);
+    if (len < 1) continue;
+    const alongFromA = hit.t * len;
+    const alongFromB = (1 - hit.t) * len;
+    const promote = Math.min(END_PROMOTE_MM, Math.max(magnetMm, len * 0.08));
+
+    // Near a tip → butt join to that endpoint (even if tip itself is slightly
+    // farther than magnetMm — cursor is already on the wall near the corner).
+    if (alongFromA <= promote) {
+      considerEndpoint(wall.a, wall.id, Math.min(dist(p, wall.a), hit.dist), false);
+      continue;
+    }
+    if (alongFromB <= promote) {
+      considerEndpoint(wall.b, wall.id, Math.min(dist(p, wall.b), hit.dist), false);
+      continue;
+    }
+
+    if (!bestSeg || hit.dist < bestSeg.strength) {
       bestSeg = {
         point: { ...hit.point },
         kind: 'segment',
@@ -83,8 +121,7 @@ export function magnetSnapPoint(
     }
   }
 
-  // Endpoints win over mid-segment when similarly close
-  if (bestEnd && (!bestSeg || bestEnd.strength <= bestSeg.strength + 40)) {
+  if (bestEnd && (!bestSeg || bestEnd.strength <= bestSeg.strength + endpointBias)) {
     return bestEnd;
   }
   if (bestSeg) return bestSeg;

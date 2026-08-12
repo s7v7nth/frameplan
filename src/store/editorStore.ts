@@ -166,8 +166,12 @@ export const useEditorStore = create<EditorState>()(
         }
         // Prefer magnet join; reject X-crossing through other walls
         if (wallSegmentCollides(start, end, walls)) {
-          // Try pure magnet to nearest endpoint only
-          const endOnly = magnetSnapPoint(p, walls, { freeWhenFar: true, magnetMm: 400 });
+          // Retry with endpoint-only preference (corners / T-ends)
+          const endOnly = magnetSnapPoint(p, walls, {
+            freeWhenFar: true,
+            magnetMm: 400,
+            endpointBiasMm: 500,
+          });
           if (endOnly.kind === 'endpoint' && !wallSegmentCollides(start, endOnly.point, walls)) {
             end = endOnly.point;
           } else {

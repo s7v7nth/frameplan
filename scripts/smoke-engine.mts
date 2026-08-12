@@ -1,4 +1,5 @@
 import { DEFAULT_SETTINGS } from '../src/domain/materials';
+import { magnetSnapPoint } from '../src/domain/geometry';
 import { generateFrameModel } from '../src/engine/frameEngine';
 import { headerHeightMm } from '../src/engine/frameGeometry';
 import type { Project } from '../src/domain/types';
@@ -227,3 +228,85 @@ if (
   console.error('Structural smoke failed', structReport);
   process.exit(1);
 }
+
+// —— Magnet: corner approach must butt-join tip-to-tip, not snap into wall body ——
+const existing = [
+  {
+    id: 'h',
+    a: { x: 0, y: 0 },
+    b: { x: 6000, y: 0 },
+    thickness: 200,
+    kind: 'exterior' as const,
+    height: 2700,
+    floor: 0 as const,
+  },
+];
+
+// Approach corner from +Y, slightly inset in X (old bug: snapped onto segment at x≈100)
+const approach = { x: 100, y: 120 };
+const cornerHit = magnetSnapPoint(approach, existing, { freeWhenFar: true });
+const midApproach = { x: 3000, y: 80 };
+const midHit = magnetSnapPoint(midApproach, existing, { freeWhenFar: true });
+const farCorner = { x: 180, y: 200 };
+const farHit = magnetSnapPoint(farCorner, existing, { freeWhenFar: true });
+
+const magnetReport = {
+  cornerKind: cornerHit.kind,
+  cornerAt: cornerHit.point,
+  midKind: midHit.kind,
+  midAt: midHit.point,
+  farKind: farHit.kind,
+  farAt: farHit.point,
+};
+
+console.log('magnet', JSON.stringify(magnetReport, null, 2));
+
+if (
+  cornerHit.kind !== 'endpoint' ||
+  Math.hypot(cornerHit.point.x - 0, cornerHit.point.y - 0) > 1 ||
+  midHit.kind !== 'segment' ||
+  Math.abs(midHit.point.x - 3000) > 1 ||
+  Math.abs(midHit.point.y - 0) > 1 ||
+  farHit.kind !== 'endpoint' ||
+  Math.hypot(farHit.point.x - 0, farHit.point.y - 0) > 1
+) {
+  console.error('Magnet smoke failed', magnetReport);
+  process.exit(1);
+}
+
+// Corner node assembly after tip-to-tip join
+const cornerProject: Project = {
+  ...project,
+  id: 't-corner',
+  walls: [
+    {
+      id: 'c1',
+      a: { x: 0, y: 0 },
+      b: { x: 4000, y: 0 },
+      thickness: 200,
+      kind: 'exterior',
+      height: 2700,
+      floor: 0,
+    },
+    {
+      id: 'c2',
+      a: { x: 0, y: 0 }, // shared tip
+      b: { x: 0, y: 4000 },
+      thickness: 200,
+      kind: 'exterior',
+      height: 2700,
+      floor: 0,
+    },
+  ],
+  openings: [],
+};
+const cornerModel = generateFrameModel(cornerProject);
+const californiaAtCorner = cornerModel.members.filter((m) =>
+  m.label.includes('Калифорнийский'),
+).length;
+if (californiaAtCorner < 3) {
+  console.error('Corner nodes not assembled', { californiaAtCorner });
+  process.exit(1);
+}
+console.log('cornerNodes', { californiaAtCorner });
+
