@@ -357,7 +357,7 @@ if (gridHit.kind !== 'grid' || gridHit.point.x !== 100 || gridHit.point.y !== 30
 }
 console.log('gridSnap', gridHit.point);
 
-// Mitered polygon at L-corner — outer corners extend past centerline tip
+// Through + butt polygon at L-corner — no diagonal "triangle in triangle" miter
 const polyWalls = [
   {
     id: 'r1',
@@ -380,24 +380,30 @@ const polyWalls = [
 ];
 const polyH = wallPolygonPoints(polyWalls[0], polyWalls);
 const polyV = wallPolygonPoints(polyWalls[1], polyWalls);
-// L at origin: shared outer (-100,-100), shared inner (100,100) — no X-overlap
 const near = (poly: number[], x: number, y: number, eps = 1) => {
   for (let i = 0; i < poly.length; i += 2) {
     if (Math.hypot(poly[i] - x, poly[i + 1] - y) <= eps) return true;
   }
   return false;
 };
+// r1 through: extends to outer (-100,±100). r2 butts flat at y=100 — no shared diagonal miter.
 const hOk =
-  polyH.length === 8 && near(polyH, -100, -100) && near(polyH, 100, 100) && !near(polyH, -100, 100);
+  polyH.length === 8 &&
+  near(polyH, -100, -100) &&
+  near(polyH, -100, 100) &&
+  !near(polyH, 100, 100);
 const vOk =
-  polyV.length === 8 && near(polyV, -100, -100) && near(polyV, 100, 100) && !near(polyV, -100, 100);
-console.log('polyMiter', { polyH, polyV, hOk, vOk });
+  polyV.length === 8 &&
+  near(polyV, -100, 100) &&
+  near(polyV, 100, 100) &&
+  !near(polyV, -100, -100);
+console.log('polyButt', { polyH, polyV, hOk, vOk });
 if (!hOk || !vOk) {
-  console.error('Polygon miter failed', { polyH, polyV, hOk, vOk });
+  console.error('Polygon butt join failed', { polyH, polyV, hOk, vOk });
   process.exit(1);
 }
 
-// Same L but second wall drawn from the FIRST wall's B tip going down (UI case)
+// Same L but second wall from first wall's B tip going down
 const polyWallsB = [
   {
     id: 'bh',
@@ -420,17 +426,17 @@ const polyWallsB = [
 ];
 const polyHB = wallPolygonPoints(polyWallsB[0], polyWallsB);
 const polyVB = wallPolygonPoints(polyWallsB[1], polyWallsB);
-// Outer (2100,100), inner (1900,-100); must NOT have anti-miter (2100,-100)/(1900,100) as the only pair
+// Through H extends to x=2100 square end; V butts flat at y=-100 — no diagonal pair
 const bOk =
   near(polyHB, 2100, 100) &&
-  near(polyHB, 1900, -100) &&
-  near(polyVB, 2100, 100) &&
+  near(polyHB, 2100, -100) &&
+  near(polyVB, 2100, -100) &&
   near(polyVB, 1900, -100) &&
-  !near(polyHB, 2100, -100) &&
-  !near(polyHB, 1900, 100);
-console.log('polyMiterAtB', { polyHB, polyVB, bOk });
+  !near(polyHB, 1900, -100) &&
+  !near(polyVB, 2100, 100);
+console.log('polyButtAtB', { polyHB, polyVB, bOk });
 if (!bOk) {
-  console.error('Polygon miter at end B failed', { polyHB, polyVB });
+  console.error('Polygon butt join at end B failed', { polyHB, polyVB });
   process.exit(1);
 }
 
