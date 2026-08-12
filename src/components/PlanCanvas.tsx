@@ -10,6 +10,7 @@ import {
   WALL_MAGNET_MM,
   GRID_MM,
   wallPolygonPoints,
+  wallCenterlinePoints,
 } from '../domain/geometry';
 import { useEditorStore } from '../store/editorStore';
 import type { Tool } from '../domain/types';
@@ -277,11 +278,12 @@ export function PlanCanvas() {
             const selected = selectedId === wall.id;
             const poly = wallPolygonPoints(wall, walls);
             const fill = selected
-              ? 'rgba(196,92,38,0.92)'
+              ? '#c45c26'
               : wall.kind === 'exterior'
-                ? 'rgba(31,58,46,0.92)'
-                : 'rgba(100,116,139,0.88)';
+                ? '#1f3a2e'
+                : '#64748b';
             const stroke = selected ? '#9a3412' : wall.kind === 'exterior' ? '#14231c' : '#475569';
+            const center = wallCenterlinePoints(wall, walls);
             return (
               <Group key={wall.id}>
                 <Line
@@ -290,9 +292,10 @@ export function PlanCanvas() {
                   fill={fill}
                   stroke={stroke}
                   // Thin outline only — thick stroke re-creates corner overlap on miters
-                  strokeWidth={selected ? 12 : 4}
+                  strokeWidth={selected ? 10 : 3}
                   lineJoin="miter"
                   miterLimit={2}
+                  perfectDrawEnabled={false}
                   draggable={tool === 'select' && !spacePan && !panning}
                   onDragStart={(e) => {
                     wallDragRef.current = { id: wall.id, x: e.target.x(), y: e.target.y() };
@@ -326,11 +329,12 @@ export function PlanCanvas() {
                     if (tool === 'delete') deleteSelected();
                   }}
                 />
-                {/* centerline guide — shows even/grid alignment */}
+                {/* Inset centerline — never crosses into the miter square */}
                 <Line
-                  points={[wall.a.x, wall.a.y, wall.b.x, wall.b.y]}
-                  stroke="rgba(244,247,242,0.55)"
-                  strokeWidth={28}
+                  points={center}
+                  stroke="rgba(244,247,242,0.35)"
+                  strokeWidth={10}
+                  lineCap="butt"
                   listening={false}
                 />
                 <Text

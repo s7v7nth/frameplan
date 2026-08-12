@@ -234,13 +234,32 @@ export function weldWallEndpoints(
   return next;
 }
 
-function matesAt(tip: Point, wall: Wall, all: Wall[], eps = 2): Wall[] {
+function matesAt(tip: Point, wall: Wall, all: Wall[], eps = 24): Wall[] {
   return all.filter(
     (w) =>
       w.id !== wall.id &&
       w.floor === wall.floor &&
       (dist(w.a, tip) <= eps || dist(w.b, tip) <= eps),
   );
+}
+
+/** Centerline guide inset so it does not paint an X through mitered corners. */
+export function wallCenterlinePoints(wall: Wall, all: Wall[]): number[] {
+  const len = wallLength(wall);
+  if (len < 1) return [wall.a.x, wall.a.y, wall.b.x, wall.b.y];
+  const u = { x: (wall.b.x - wall.a.x) / len, y: (wall.b.y - wall.a.y) / len };
+  const insetA = matesAt(wall.a, wall, all).length ? wall.thickness / 2 : 0;
+  const insetB = matesAt(wall.b, wall, all).length ? wall.thickness / 2 : 0;
+  if (insetA + insetB >= len - 1) {
+    const m = { x: (wall.a.x + wall.b.x) / 2, y: (wall.a.y + wall.b.y) / 2 };
+    return [m.x, m.y, m.x, m.y];
+  }
+  return [
+    wall.a.x + u.x * insetA,
+    wall.a.y + u.y * insetA,
+    wall.b.x - u.x * insetB,
+    wall.b.y - u.y * insetB,
+  ];
 }
 
 /**
