@@ -2,6 +2,7 @@ import { SidePanel } from './components/SidePanel';
 import { PlanCanvas } from './components/PlanCanvas';
 import { ReportsView } from './components/ReportsView';
 import { useEditorStore } from './store/editorStore';
+import { APP_BUILD } from './version';
 import './App.css';
 
 const TABS = [
@@ -78,6 +79,9 @@ export default function App() {
             <ReportsView />
           </div>
         )}
+      </div>
+      <div className="build-badge" title="Номер сборки — сверяй с актуальной версией">
+        build {APP_BUILD}
       </div>
     </div>
   );

@@ -1,5 +1,5 @@
 import { DEFAULT_SETTINGS } from '../src/domain/materials';
-import { magnetSnapPoint, weldWallEndpoints, wallPolygonPoints, resolveDraftSnap, GRID_MM } from '../src/domain/geometry';
+import { magnetSnapPoint, weldWallEndpoints, wallPolygonPoints, resolveDraftSnap, GRID_MM, gridStepForScale } from '../src/domain/geometry';
 import { generateFrameModel } from '../src/engine/frameEngine';
 import { headerHeightMm } from '../src/engine/frameGeometry';
 import type { Project } from '../src/domain/types';
@@ -229,7 +229,7 @@ if (
   process.exit(1);
 }
 
-// —— Magnet: corner approach must butt-join tip-to-tip, not snap into wall body ——
+// —— Magnet: face (в торец) first; tip-to-tip only when close to tip ——
 const existing = [
   {
     id: 'h',
@@ -242,22 +242,25 @@ const existing = [
   },
 ];
 
-// Approach corner from +Y, slightly inset in X (old bug: snapped onto segment at x≈100)
+// Near tip but not ON tip → face/butt on the wall, NOT угол на угол
 const approach = { x: 100, y: 120 };
 const cornerHit = magnetSnapPoint(approach, existing, { freeWhenFar: true });
 const midApproach = { x: 3000, y: 80 };
 const midHit = magnetSnapPoint(midApproach, existing, { freeWhenFar: true });
+// Still outside tip radius → face
 const farCorner = { x: 150, y: 160 };
 const farHit = magnetSnapPoint(farCorner, existing, { freeWhenFar: true });
-// Click ~350mm along wall — still promote to tip (END_PROMOTE)
+// Along wall near tip → still face (no promote-to-tip)
 const inset = { x: 350, y: 80 };
 const insetHit = magnetSnapPoint(inset, existing, { freeWhenFar: true });
-// Beyond promote zone → face/grid along wall, NOT nested wrongly into body as endpoint-steal
 const alongFace = { x: 1200, y: 80 };
 const faceHit = magnetSnapPoint(alongFace, existing, { freeWhenFar: true });
+// Push further into the tip → угол на угол
+const tipClose = { x: 50, y: 40 };
+const tipHit = magnetSnapPoint(tipClose, existing, { freeWhenFar: true });
 
-// Hysteresis: once on tip, stay locked while leaving the engage radius
-const sticky = resolveDraftSnap({ x: 220, y: 220 }, existing, {
+// Hysteresis: once on tip, stay while inside tip release radius
+const sticky = resolveDraftSnap({ x: 80, y: 80 }, existing, {
   prev: { point: { x: 0, y: 0 }, kind: 'endpoint', wallId: 'h', strength: 50 },
 });
 if (sticky.kind !== 'endpoint' || sticky.point.x !== 0 || sticky.point.y !== 0) {
@@ -283,23 +286,35 @@ const magnetReport = {
   insetAt: insetHit.point,
   faceKind: faceHit.kind,
   faceAt: faceHit.point,
+  tipKind: tipHit.kind,
+  tipAt: tipHit.point,
 };
 
 console.log('magnet', JSON.stringify(magnetReport, null, 2));
 
 if (
-  cornerHit.kind !== 'endpoint' ||
-  Math.hypot(cornerHit.point.x - 0, cornerHit.point.y - 0) > 1 ||
+  cornerHit.kind !== 'segment' ||
+  Math.abs(cornerHit.point.y) > 1 ||
   midHit.kind !== 'segment' ||
   Math.abs(midHit.point.x - 3000) > 1 ||
   Math.abs(midHit.point.y - 0) > 1 ||
-  farHit.kind !== 'endpoint' ||
-  Math.hypot(farHit.point.x - 0, farHit.point.y - 0) > 1 ||
-  insetHit.kind !== 'endpoint' ||
-  Math.hypot(insetHit.point.x - 0, insetHit.point.y - 0) > 1 ||
-  faceHit.kind !== 'segment'
+  farHit.kind !== 'segment' ||
+  insetHit.kind !== 'segment' ||
+  Math.abs(insetHit.point.y) > 1 ||
+  faceHit.kind !== 'segment' ||
+  tipHit.kind !== 'endpoint' ||
+  Math.hypot(tipHit.point.x - 0, tipHit.point.y - 0) > 1
 ) {
   console.error('Magnet smoke failed', magnetReport);
+  process.exit(1);
+}
+
+// Zoom-scaled grid: closer zoom → finer step
+const gIn = gridStepForScale(0.35);
+const gOut = gridStepForScale(0.04);
+console.log('gridScale', { gIn, gOut });
+if (!(gIn < gOut) || gIn > 50 || gOut < 100) {
+  console.error('gridStepForScale failed', { gIn, gOut });
   process.exit(1);
 }
 
