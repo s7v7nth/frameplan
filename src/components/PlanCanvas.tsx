@@ -11,6 +11,7 @@ import {
   GRID_MM,
   wallPolygonPoints,
   wallCenterlinePoints,
+  MITER_BUILD,
 } from '../domain/geometry';
 import { useEditorStore } from '../store/editorStore';
 import type { Tool } from '../domain/types';
@@ -587,7 +588,7 @@ export function PlanCanvas() {
       </Stage>
 
       <div className="canvas-hint">
-        Сетка {GRID_MM} мм (синий крест) · магнит к торцу/грани стены (оранжевый) · без X-пересечений ·
+        Сетка {GRID_MM} мм (синий крест) · магнит к торцу/грани стены (оранжевый) · митра {MITER_BUILD} ·
         V/W/O/D — инструменты
       </div>
     </div>

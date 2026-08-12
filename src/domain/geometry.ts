@@ -281,6 +281,8 @@ function dirFromTip(tip: Point, wall: Wall): Point | null {
  * closest-to-butt, and not left/right-from-a→b — both fail at end B / 90° ties).
  * Then each hit is assigned to this wall's left/right offset by proximity to the butt.
  */
+export const MITER_BUILD = 'bisector-v3';
+
 export function wallPolygonPoints(wall: Wall, all: Wall[]): number[] {
   const basis = unitAndNormal(wall.a, wall.b);
   if (!basis) return [];
