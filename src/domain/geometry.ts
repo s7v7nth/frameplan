@@ -308,6 +308,11 @@ export function resolveDraftSnap(
     }
 
     for (const edge of wallFaces(wall)) {
+      const cl = { x: (wall.a.x + wall.b.x) / 2, y: (wall.a.y + wall.b.y) / 2 };
+      const faceMid = { x: (edge.a.x + edge.b.x) / 2, y: (edge.a.y + edge.b.y) / 2 };
+      const faceSide = { x: faceMid.x - cl.x, y: faceMid.y - cl.y };
+      const tipRel = { x: raw.x - cl.x, y: raw.y - cl.y };
+      if (faceSide.x * tipRel.x + faceSide.y * tipRel.y < 0) continue;
       const hit = projectPointOnSegment(raw, edge.a, edge.b);
       if (hit.dist <= SEGMENT_MAGNET_MM && (!best.face || hit.dist < best.face.strength)) {
         const pt = dockPointOnFace(raw, wall, edge, selfThickness, grid);
@@ -328,9 +333,13 @@ export function resolveDraftSnap(
     }
   }
 
-  // Торец wins near ends; face wins over tip unless tip is clearly engaged and no face/endface
-  if (best.endface) return best.endface;
+  // Face wins when closer / mid-span; торец only when clearly at the end (not reverse of face)
+  if (best.face && best.endface) {
+    if (best.face.strength <= best.endface.strength + 25) return best.face;
+    return best.endface;
+  }
   if (best.face && (!best.end || best.end.strength > TIP_MAGNET_MM * 0.85)) return best.face;
+  if (best.endface) return best.endface;
   if (best.end) return best.end;
   if (best.face) return best.face;
 
@@ -390,14 +399,19 @@ function tipsNearlyCoincident(a: Point, b: Point, mm = BUTT_JOIN_DETECT_MM): boo
 }
 
 /**
- * Planner-style L-butt: move the butt tip onto the through wall's inner face,
- * inset by butt.thickness/2 along the through wall.
- * From shared tip C: buttTip' = C + alongButt*through.t + alongThrough*(butt.t/2)
- * Also shifts the through wall laterally by through.t/2 toward the butt so outer faces flush.
+ * Planner-style L-butt join.
+ * By default may adjust any wall. Pass `mutableWallIds` to only rewrite those
+ * walls (hosts stay put) — used while dragging so opposite walls do not warp.
  */
-export function applyButtJoins(walls: Wall[], floor: number): Wall[] {
+export function applyButtJoins(
+  walls: Wall[],
+  floor: number,
+  opts: { mutableWallIds?: string[] } = {},
+): Wall[] {
   const next = walls.map((w) => ({ ...w, a: { ...w.a }, b: { ...w.b } }));
   const floorWalls = next.filter((w) => w.floor === floor);
+  const mutable = opts.mutableWallIds ? new Set(opts.mutableWallIds) : null;
+  const canMutate = (id: string) => !mutable || mutable.has(id);
 
   type Corner = {
     throughId: string;
@@ -423,7 +437,7 @@ export function applyButtJoins(walls: Wall[], floor: number): Wall[] {
           const d1 = dirFromTip(t1, w1);
           if (!d0 || !d1) continue;
           const cross = d0.x * d1.y - d0.y * d1.x;
-          if (Math.abs(cross) < 0.55) continue; // not an L
+          if (Math.abs(cross) < 0.55) continue;
           const throughIs0 = isThroughWall(w0, w1);
           const through = throughIs0 ? w0 : w1;
           const butt = throughIs0 ? w1 : w0;
@@ -431,10 +445,7 @@ export function applyButtJoins(walls: Wall[], floor: number): Wall[] {
           const buttEnd = throughIs0 ? e1 : e0;
           const alongThrough = throughIs0 ? d0 : d1;
           const alongButt = throughIs0 ? d1 : d0;
-          const corner = {
-            x: (t0.x + t1.x) / 2,
-            y: (t0.y + t1.y) / 2,
-          };
+          const corner = { x: (t0.x + t1.x) / 2, y: (t0.y + t1.y) / 2 };
           corners.push({
             throughId: through.id,
             throughEnd,
@@ -449,10 +460,12 @@ export function applyButtJoins(walls: Wall[], floor: number): Wall[] {
     }
   }
 
-  // Group lateral shift per through wall (average of butt directions at its corners)
+  // Lateral shift of through walls — only when mutable and not already docked
   const throughShift = new Map<string, Point>();
   const throughShiftN = new Map<string, number>();
+  const actuallyShifted = new Set<string>();
   for (const c of corners) {
+    if (!canMutate(c.throughId)) continue;
     const through = next.find((w) => w.id === c.throughId)!;
     const half = through.thickness / 2;
     const sh = { x: c.alongButt.x * half, y: c.alongButt.y * half };
@@ -465,7 +478,6 @@ export function applyButtJoins(walls: Wall[], floor: number): Wall[] {
     const avg = { x: sum.x / n, y: sum.y / n };
     const w = next.find((x) => x.id === id);
     if (!w) continue;
-    // Skip if already shifted (butt tip already on our face away from tip)
     const sample = corners.find((c) => c.throughId === id);
     if (sample) {
       const butt = next.find((x) => x.id === sample.buttId);
@@ -481,10 +493,12 @@ export function applyButtJoins(walls: Wall[], floor: number): Wall[] {
     }
     w.a = { x: w.a.x + avg.x, y: w.a.y + avg.y };
     w.b = { x: w.b.x + avg.x, y: w.b.y + avg.y };
+    actuallyShifted.add(id);
   }
 
-  // Place butt tips on through inner faces
+  // Place butt tips on through faces — only mutable butt walls
   for (const c of corners) {
+    if (!canMutate(c.buttId)) continue;
     const through = next.find((w) => w.id === c.throughId);
     const butt = next.find((w) => w.id === c.buttId);
     if (!through || !butt) continue;
@@ -492,21 +506,37 @@ export function applyButtJoins(walls: Wall[], floor: number): Wall[] {
     const throughTip = through[c.throughEnd];
     const alongButt = c.alongButt;
     const alongThrough = dirFromTip(throughTip, through) ?? c.alongThrough;
-    // Undo half-shift to recover original shared corner, then apply full Planner dock
-    const preShiftCorner = {
-      x: throughTip.x - alongButt.x * (through.thickness / 2),
-      y: throughTip.y - alongButt.y * (through.thickness / 2),
-    };
-    const dockFull = {
-      x:
-        preShiftCorner.x +
-        alongButt.x * through.thickness +
-        alongThrough.x * (butt.thickness / 2),
-      y:
-        preShiftCorner.y +
-        alongButt.y * through.thickness +
-        alongThrough.y * (butt.thickness / 2),
-    };
+    const throughShifted = actuallyShifted.has(c.throughId);
+
+    let dockFull: Point;
+    if (throughShifted) {
+      const preShiftCorner = {
+        x: throughTip.x - alongButt.x * (through.thickness / 2),
+        y: throughTip.y - alongButt.y * (through.thickness / 2),
+      };
+      dockFull = {
+        x:
+          preShiftCorner.x +
+          alongButt.x * through.thickness +
+          alongThrough.x * (butt.thickness / 2),
+        y:
+          preShiftCorner.y +
+          alongButt.y * through.thickness +
+          alongThrough.y * (butt.thickness / 2),
+      };
+    } else {
+      // Host locked: dock onto current face near tip (do not invent a through shift)
+      dockFull = {
+        x:
+          throughTip.x +
+          alongButt.x * (through.thickness / 2) +
+          alongThrough.x * (butt.thickness / 2),
+        y:
+          throughTip.y +
+          alongButt.y * (through.thickness / 2) +
+          alongThrough.y * (butt.thickness / 2),
+      };
+    }
     butt[c.buttEnd] = { x: Math.round(dockFull.x), y: Math.round(dockFull.y) };
   }
 
@@ -595,8 +625,170 @@ export function weldWallEndpoints(
 }
 
 /** Join L-corners into Planner butt geometry, then tip-weld remaining coincidences. */
-export function finalizeWallJoins(walls: Wall[], floor: number): Wall[] {
-  return weldWallEndpoints(applyButtJoins(walls, floor), floor);
+export function finalizeWallJoins(
+  walls: Wall[],
+  floor: number,
+  opts: { mutableWallIds?: string[] } = {},
+): Wall[] {
+  return weldWallEndpoints(applyButtJoins(walls, floor, opts), floor);
+}
+
+/**
+ * Rigid translation snap for whole-wall drag.
+ * Keeps orientation/length; only adjusts dx/dy. Prefers the face on the approach
+ * side and ignores distant opposite walls (no yank across the room).
+ */
+export function resolveTranslateSnap(
+  wall: Wall,
+  dx: number,
+  dy: number,
+  others: Wall[],
+  opts: { scale?: number; grid?: number } = {},
+): { dx: number; dy: number; kind: MagnetKind; ok: boolean } {
+  const grid = opts.grid ?? (opts.scale != null ? gridStepForScale(opts.scale) : GRID_MM);
+  const dragLen = Math.hypot(dx, dy);
+  const dragU = dragLen > 1 ? { x: dx / dragLen, y: dy / dragLen } : { x: 0, y: 0 };
+
+  // Base: grid-snap the translation via tip A
+  const rawA = { x: wall.a.x + dx, y: wall.a.y + dy };
+  const gridA = snapPoint(rawA, grid);
+  let adx = gridA.x - wall.a.x;
+  let ady = gridA.y - wall.a.y;
+
+  type Cand = { dx: number; dy: number; dist: number; kind: MagnetKind };
+  const cands: Cand[] = [];
+
+  for (const end of ['a', 'b'] as const) {
+    const tip = { x: wall[end].x + adx, y: wall[end].y + ady };
+    for (const host of others) {
+      const basis = unitAndNormal(host.a, host.b);
+      if (!basis) continue;
+      // Only faces on the approach side of the host (or nearest if no drag)
+      for (const face of wallFaces(host)) {
+        const cl = { x: (host.a.x + host.b.x) / 2, y: (host.a.y + host.b.y) / 2 };
+        const faceMid = { x: (face.a.x + face.b.x) / 2, y: (face.a.y + face.b.y) / 2 };
+        const faceSide = { x: faceMid.x - cl.x, y: faceMid.y - cl.y };
+        const tipRel = { x: tip.x - cl.x, y: tip.y - cl.y };
+        // Only the face on the tip's side of the host (no reverse magnet)
+        if (faceSide.x * tipRel.x + faceSide.y * tipRel.y < 0) continue;
+
+        const hit = projectPointOnSegment(tip, face.a, face.b);
+        if (hit.dist > SEGMENT_MAGNET_MM) continue;
+        const wallBasis = unitAndNormal(wall.a, wall.b);
+        if (!wallBasis) continue;
+        const alongDot = Math.abs(wallBasis.u.x * basis.u.x + wallBasis.u.y * basis.u.y);
+        const parallel = alongDot > 0.92;
+        const ortho = alongDot < 0.35;
+        if (!parallel && !ortho) continue;
+
+        const tdx = hit.point.x - wall[end].x;
+        const tdy = hit.point.y - wall[end].y;
+        if (dragLen > 20 && tdx * dragU.x + tdy * dragU.y < -40) continue;
+        cands.push({ dx: tdx, dy: tdy, dist: hit.dist, kind: 'face' });
+      }
+
+      // Endface only when tip is outside past the host tip (true торец approach)
+      for (const edge of wallEndFaces(host)) {
+        const hit = projectPointOnSegment(tip, edge.a, edge.b);
+        if (hit.dist > ENDFACE_MAGNET_MM) continue;
+        const hostTip = dist(edge.a, host.a) < dist(edge.a, host.b) ? host.a : host.b;
+        const outward = dirFromTip(hostTip, host);
+        if (outward) {
+          // Tip should be on the outward side of the tip (approaching the end from outside)
+          const rel = { x: tip.x - hostTip.x, y: tip.y - hostTip.y };
+          if (rel.x * -outward.x + rel.y * -outward.y < -20) continue;
+        }
+        const tdx = hit.point.x - wall[end].x;
+        const tdy = hit.point.y - wall[end].y;
+        if (dragLen > 20 && tdx * dragU.x + tdy * dragU.y < -40) continue;
+        cands.push({ dx: tdx, dy: tdy, dist: hit.dist, kind: 'endface' });
+      }
+    }
+  }
+
+  let kind: MagnetKind = 'grid';
+  if (cands.length) {
+    cands.sort((a, b) => a.dist - b.dist);
+    adx = Math.round(cands[0].dx);
+    ady = Math.round(cands[0].dy);
+    kind = cands[0].kind;
+  }
+
+  const nextA = { x: wall.a.x + adx, y: wall.a.y + ady };
+  const nextB = { x: wall.b.x + adx, y: wall.b.y + ady };
+  const ok = !wallSegmentCollides(nextA, nextB, others);
+  return { dx: adx, dy: ady, kind, ok };
+}
+
+/** Right-angle markers at L-corners (~90°) for canvas feedback. */
+export function orthoCornerMarkers(
+  walls: Wall[],
+  floor: number,
+): { x: number; y: number; angle: number; size: number }[] {
+  const out: { x: number; y: number; angle: number; size: number }[] = [];
+  const floorWalls = walls.filter((w) => w.floor === floor);
+  const seen = new Set<string>();
+
+  for (let i = 0; i < floorWalls.length; i++) {
+    for (let j = i + 1; j < floorWalls.length; j++) {
+      const w0 = floorWalls[i];
+      const w1 = floorWalls[j];
+      const b0 = unitAndNormal(w0.a, w0.b);
+      const b1 = unitAndNormal(w1.a, w1.b);
+      if (!b0 || !b1) continue;
+      const dot = Math.abs(b0.u.x * b1.u.x + b0.u.y * b1.u.y);
+      if (dot > 0.2) continue; // not ~perpendicular
+
+      for (const e0 of ['a', 'b'] as const) {
+        for (const e1 of ['a', 'b'] as const) {
+          const t0 = w0[e0];
+          const t1 = w1[e1];
+          const dTips = dist(t0, t1);
+          const onFace =
+            wallFaces(w0).some((f) => projectPointOnSegment(t1, f.a, f.b).dist <= 20) ||
+            wallFaces(w1).some((f) => projectPointOnSegment(t0, f.a, f.b).dist <= 20);
+          if (dTips > Math.max(w0.thickness, w1.thickness) * 1.6 + 40 && !onFace) continue;
+
+          const key = [w0.id, e0, w1.id, e1].sort().join(':');
+          if (seen.has(key)) continue;
+          seen.add(key);
+
+          const d0 = dirFromTip(t0, w0);
+          const d1 = dirFromTip(t1, w1);
+          if (!d0 || !d1) continue;
+          // Outer corner bisector for placing the square
+          const ox = -(d0.x + d1.x);
+          const oy = -(d0.y + d1.y);
+          const olen = Math.hypot(ox, oy) || 1;
+          const size = Math.min(w0.thickness, w1.thickness) * 0.55;
+          const cx = (t0.x + t1.x) / 2 + (ox / olen) * (size * 0.15);
+          const cy = (t0.y + t1.y) / 2 + (oy / olen) * (size * 0.15);
+          const angle = Math.atan2(d0.y, d0.x);
+          out.push({ x: cx, y: cy, angle, size });
+        }
+      }
+    }
+  }
+  return out;
+}
+
+/** Draft-time ortho indicator at the start tip when the segment is H/V locked. */
+export function draftOrthoMarker(
+  from: Point,
+  to: Point,
+  thresholdMm = ORTHO_SNAP_MM,
+): { x: number; y: number; angle: number; size: number } | null {
+  const dx = to.x - from.x;
+  const dy = to.y - from.y;
+  const len = Math.hypot(dx, dy);
+  if (len < 200) return null;
+  const ortho =
+    (Math.abs(dx) <= thresholdMm && Math.abs(dy) > thresholdMm) ||
+    (Math.abs(dy) <= thresholdMm && Math.abs(dx) > thresholdMm) ||
+    Math.min(Math.abs(dx), Math.abs(dy)) / Math.max(Math.abs(dx), Math.abs(dy)) < 0.08;
+  if (!ortho) return null;
+  const angle = Math.abs(dx) >= Math.abs(dy) ? 0 : Math.PI / 2;
+  return { x: from.x, y: from.y, angle, size: 180 };
 }
 
 /**
