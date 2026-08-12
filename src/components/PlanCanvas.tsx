@@ -12,6 +12,7 @@ import {
   wallPolygonPoints,
   wallCenterlinePoints,
   MITER_BUILD,
+  type MagnetHit,
 } from '../domain/geometry';
 import { useEditorStore } from '../store/editorStore';
 import type { Tool } from '../domain/types';
@@ -27,6 +28,7 @@ const TOOLS: { id: Tool; label: string; hint: string }[] = [
 export function PlanCanvas() {
   const containerRef = useRef<HTMLDivElement>(null);
   const wallDragRef = useRef({ id: '', x: 0, y: 0 });
+  const snapPrevRef = useRef<MagnetHit | null>(null);
   const panRef = useRef<{
     active: boolean;
     startX: number;
@@ -80,20 +82,21 @@ export function PlanCanvas() {
 
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
+      const tag = (e.target as HTMLElement)?.tagName;
+      const typing = tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT';
       if (e.code === 'Space') {
         e.preventDefault();
         setSpacePan(true);
       }
-      if (e.key === 'v' || e.key === 'V') setTool('select');
-      if (e.key === 'w' || e.key === 'W') setTool('wall');
-      if (e.key === 'o' || e.key === 'O') setTool('window');
-      if (e.key === 'd' || e.key === 'D') setTool('door');
-      if (e.key === 'Delete' || e.key === 'Backspace') {
-        const tag = (e.target as HTMLElement)?.tagName;
-        if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
-        deleteSelected();
+      // Physical key codes — work on RU/EN layouts alike
+      if (!typing) {
+        if (e.code === 'KeyV') setTool('select');
+        if (e.code === 'KeyW') setTool('wall');
+        if (e.code === 'KeyO') setTool('window');
+        if (e.code === 'KeyD') setTool('door');
+        if (e.code === 'Delete' || e.code === 'Backspace') deleteSelected();
+        if (e.code === 'Escape') useEditorStore.getState().cancelDraft();
       }
-      if (e.key === 'Escape') useEditorStore.getState().cancelDraft();
     };
     const onKeyUp = (e: KeyboardEvent) => {
       if (e.code === 'Space') setSpacePan(false);
@@ -105,6 +108,11 @@ export function PlanCanvas() {
       window.removeEventListener('keyup', onKeyUp);
     };
   }, [deleteSelected, setTool]);
+
+  // Reset sticky magnet when leaving wall tool or finishing a draft
+  useEffect(() => {
+    snapPrevRef.current = null;
+  }, [tool, draftStart]);
 
   const toWorld = useCallback(
     (sx: number, sy: number) => ({
@@ -234,10 +242,13 @@ export function PlanCanvas() {
           if (tool === 'wall') {
             const hit = resolveDraftSnap(world, walls, {
               from: draftStart ?? undefined,
+              prev: snapPrevRef.current,
             });
+            snapPrevRef.current = hit;
             setHover(hit.point);
             setMagnetAt({ x: hit.point.x, y: hit.point.y, kind: hit.kind });
           } else {
+            snapPrevRef.current = null;
             setHover(world);
             setMagnetAt(null);
           }
@@ -588,7 +599,7 @@ export function PlanCanvas() {
       </Stage>
 
       <div className="canvas-hint">
-        Сетка {GRID_MM} мм (синий крест) · магнит к торцу/грани стены (оранжевый) · митра {MITER_BUILD} ·
+        Сетка {GRID_MM} мм · магнит с гистерезисом · митра {MITER_BUILD} · V/W/O/D (любая раскладка) ·
         V/W/O/D — инструменты
       </div>
     </div>

@@ -32,16 +32,19 @@ export function snapPoint(p: Point, grid = GRID_MM): Point {
   };
 }
 
-/** Tip magnet — enough for thick stroke, not so huge it steals grid drawing. */
-export const WALL_MAGNET_MM = 300;
+/** Tip magnet engage radius (mm). */
+export const WALL_MAGNET_MM = 240;
+/** Keep tip lock until cursor leaves this farther radius — kills flicker. */
+export const WALL_MAGNET_RELEASE_MM = 340;
 /** Mid-span face (T) magnet. */
-export const SEGMENT_MAGNET_MM = 140;
+export const SEGMENT_MAGNET_MM = 100;
+export const SEGMENT_MAGNET_RELEASE_MM = 150;
 /** Along-wall promote to tip (avoid nesting into body). */
-export const END_PROMOTE_MM = 400;
+export const END_PROMOTE_MM = 380;
 /** Weld shared tips after place. */
 export const ENDPOINT_WELD_MM = 120;
-/** Soft H/V lock while drafting. */
-export const ORTHO_SNAP_MM = 100;
+/** Soft H/V lock while drafting (only when falling back to grid). */
+export const ORTHO_SNAP_MM = 70;
 
 export type MagnetHit = {
   point: Point;
@@ -77,8 +80,9 @@ function lineIntersect(p1: Point, d1: Point, p2: Point, d2: Point): Point | null
 }
 
 /**
- * Draft snap: grid is always the baseline; wall magnets override when close.
- * This restores "кратность" so walls can be drawn square/even.
+ * Draft snap: wall magnets first (on raw cursor), then ortho+grid.
+ * Optional `prev` adds hysteresis so the cursor does not flicker between
+ * tip / face / grid when hovering near thresholds.
  */
 export function resolveDraftSnap(
   p: Point,
@@ -87,29 +91,80 @@ export function resolveDraftSnap(
     ignoreWallId?: string;
     from?: Point;
     grid?: number;
+    prev?: MagnetHit | null;
   } = {},
 ): MagnetHit {
   const grid = opts.grid ?? GRID_MM;
-  let cursor = { x: p.x, y: p.y };
-  if (opts.from) cursor = orthoSnapFrom(opts.from, cursor);
-  const gridPt = snapPoint(cursor, grid);
+  const raw = { x: p.x, y: p.y };
+
+  // Sticky previous lock — release only after leaving a larger radius
+  if (opts.prev && opts.prev.kind !== 'grid') {
+    if (opts.prev.kind === 'endpoint') {
+      const d = dist(raw, opts.prev.point);
+      if (d <= WALL_MAGNET_RELEASE_MM) {
+        return {
+          point: { ...opts.prev.point },
+          kind: 'endpoint',
+          wallId: opts.prev.wallId,
+          strength: d,
+        };
+      }
+    } else if (opts.prev.kind === 'segment' && opts.prev.wallId) {
+      const wall = walls.find((w) => w.id === opts.prev!.wallId);
+      if (wall && wall.id !== opts.ignoreWallId) {
+        const hit = projectPointOnSegment(raw, wall.a, wall.b);
+        const len = wallLength(wall);
+        const alongA = hit.t * len;
+        const alongB = (1 - hit.t) * len;
+        const promote = Math.min(END_PROMOTE_MM, len * 0.15);
+        // Near tip while sticky on this wall → promote to tip (corner)
+        if (hit.dist <= WALL_MAGNET_RELEASE_MM && alongA <= promote) {
+          return {
+            point: { x: wall.a.x, y: wall.a.y },
+            kind: 'endpoint',
+            wallId: wall.id,
+            strength: Math.min(dist(raw, wall.a), hit.dist),
+          };
+        }
+        if (hit.dist <= WALL_MAGNET_RELEASE_MM && alongB <= promote) {
+          return {
+            point: { x: wall.b.x, y: wall.b.y },
+            kind: 'endpoint',
+            wallId: wall.id,
+            strength: Math.min(dist(raw, wall.b), hit.dist),
+          };
+        }
+        if (hit.dist <= SEGMENT_MAGNET_RELEASE_MM) {
+          const face = snapPoint(hit.point, grid);
+          const onSeg = projectPointOnSegment(face, wall.a, wall.b);
+          return {
+            point: { x: onSeg.point.x, y: onSeg.point.y },
+            kind: 'segment',
+            wallId: wall.id,
+            strength: hit.dist,
+          };
+        }
+      }
+    }
+  }
 
   const best = {
     end: null as MagnetHit | null,
     seg: null as MagnetHit | null,
   };
 
+  // Magnets against RAW cursor — do not ortho first (that caused yanking)
   for (const wall of walls) {
     if (opts.ignoreWallId && wall.id === opts.ignoreWallId) continue;
 
     for (const end of [wall.a, wall.b]) {
-      const d = dist(cursor, end);
+      const d = dist(raw, end);
       if (d <= WALL_MAGNET_MM && (!best.end || d < best.end.strength)) {
         best.end = { point: { x: end.x, y: end.y }, kind: 'endpoint', wallId: wall.id, strength: d };
       }
     }
 
-    const hit = projectPointOnSegment(cursor, wall.a, wall.b);
+    const hit = projectPointOnSegment(raw, wall.a, wall.b);
     const len = wallLength(wall);
     if (len < 1) continue;
     const alongA = hit.t * len;
@@ -118,7 +173,7 @@ export function resolveDraftSnap(
 
     // Near tip along wall → tip (for corner nodes), not into the body
     if (hit.dist <= WALL_MAGNET_MM && alongA <= promote) {
-      const strength = Math.min(dist(cursor, wall.a), hit.dist);
+      const strength = Math.min(dist(raw, wall.a), hit.dist);
       if (!best.end || strength < best.end.strength) {
         best.end = {
           point: { x: wall.a.x, y: wall.a.y },
@@ -130,7 +185,7 @@ export function resolveDraftSnap(
       continue;
     }
     if (hit.dist <= WALL_MAGNET_MM && alongB <= promote) {
-      const strength = Math.min(dist(cursor, wall.b), hit.dist);
+      const strength = Math.min(dist(raw, wall.b), hit.dist);
       if (!best.end || strength < best.end.strength) {
         best.end = {
           point: { x: wall.b.x, y: wall.b.y },
@@ -143,7 +198,6 @@ export function resolveDraftSnap(
     }
 
     if (hit.dist <= SEGMENT_MAGNET_MM && (!best.seg || hit.dist < best.seg.strength)) {
-      // Face snap also on grid along the wall when sensible
       const face = snapPoint(hit.point, grid);
       const onSeg = projectPointOnSegment(face, wall.a, wall.b);
       best.seg = {
@@ -155,11 +209,15 @@ export function resolveDraftSnap(
     }
   }
 
-  // Endpoint wins over face when reasonably close; else face; else grid
-  if (best.end && (!best.seg || best.end.strength <= best.seg.strength + 80)) {
+  if (best.end && (!best.seg || best.end.strength <= best.seg.strength + 40)) {
     return best.end;
   }
   if (best.seg) return best.seg;
+
+  // Free space: soft ortho, then 100 mm grid
+  let cursor = raw;
+  if (opts.from) cursor = orthoSnapFrom(opts.from, cursor);
+  const gridPt = snapPoint(cursor, grid);
   return { point: gridPt, kind: 'grid', strength: dist(p, gridPt) };
 }
 

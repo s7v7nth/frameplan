@@ -247,7 +247,7 @@ const approach = { x: 100, y: 120 };
 const cornerHit = magnetSnapPoint(approach, existing, { freeWhenFar: true });
 const midApproach = { x: 3000, y: 80 };
 const midHit = magnetSnapPoint(midApproach, existing, { freeWhenFar: true });
-const farCorner = { x: 180, y: 200 };
+const farCorner = { x: 150, y: 160 };
 const farHit = magnetSnapPoint(farCorner, existing, { freeWhenFar: true });
 // Click ~350mm along wall — still promote to tip (END_PROMOTE)
 const inset = { x: 350, y: 80 };
@@ -255,6 +255,22 @@ const insetHit = magnetSnapPoint(inset, existing, { freeWhenFar: true });
 // Beyond promote zone → face/grid along wall, NOT nested wrongly into body as endpoint-steal
 const alongFace = { x: 1200, y: 80 };
 const faceHit = magnetSnapPoint(alongFace, existing, { freeWhenFar: true });
+
+// Hysteresis: once on tip, stay locked while leaving the engage radius
+const sticky = resolveDraftSnap({ x: 220, y: 220 }, existing, {
+  prev: { point: { x: 0, y: 0 }, kind: 'endpoint', wallId: 'h', strength: 50 },
+});
+if (sticky.kind !== 'endpoint' || sticky.point.x !== 0 || sticky.point.y !== 0) {
+  console.error('Sticky tip lock failed', sticky);
+  process.exit(1);
+}
+const stickyRelease = resolveDraftSnap({ x: 400, y: 400 }, existing, {
+  prev: { point: { x: 0, y: 0 }, kind: 'endpoint', wallId: 'h', strength: 50 },
+});
+if (stickyRelease.kind === 'endpoint' && stickyRelease.point.x === 0 && stickyRelease.point.y === 0) {
+  console.error('Sticky tip should release when far', stickyRelease);
+  process.exit(1);
+}
 
 const magnetReport = {
   cornerKind: cornerHit.kind,
