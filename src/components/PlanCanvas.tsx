@@ -8,12 +8,12 @@ import {
   projectPointOnSegment,
   resolveDraftSnap,
   WALL_MAGNET_MM,
-  GRID_MM,
+  gridStepForScale,
   wallPolygonPoints,
   wallCenterlinePoints,
-  MITER_BUILD,
   type MagnetHit,
 } from '../domain/geometry';
+import { APP_BUILD } from '../version';
 import { useEditorStore } from '../store/editorStore';
 import type { Tool } from '../domain/types';
 
@@ -122,6 +122,7 @@ export function PlanCanvas() {
     [offset, scale],
   );
 
+  const gridMm = gridStepForScale(scale);
   const walls = useMemo(
     () => project.walls.filter((w) => w.floor === project.activeFloor),
     [project.walls, project.activeFloor],
@@ -171,7 +172,7 @@ export function PlanCanvas() {
 
     if (tool === 'wall') {
       if (!draftStart) beginWall(world);
-      else finishWall(resolveDraftSnap(world, walls, { from: draftStart }).point);
+      else finishWall(resolveDraftSnap(world, walls, { from: draftStart, scale }).point);
       return;
     }
     if (tool === 'window') {
@@ -243,6 +244,7 @@ export function PlanCanvas() {
             const hit = resolveDraftSnap(world, walls, {
               from: draftStart ?? undefined,
               prev: snapPrevRef.current,
+              scale,
             });
             snapPrevRef.current = hit;
             setHover(hit.point);
@@ -334,7 +336,7 @@ export function PlanCanvas() {
                       if (!pos) return;
                       const world = toWorld(pos.x, pos.y);
                       if (!draftStart) beginWall(world);
-                      else finishWall(resolveDraftSnap(world, walls, { from: draftStart }).point);
+                      else finishWall(resolveDraftSnap(world, walls, { from: draftStart, scale }).point);
                       return;
                     }
                     select(wall.id);
@@ -599,8 +601,7 @@ export function PlanCanvas() {
       </Stage>
 
       <div className="canvas-hint">
-        Сетка {GRID_MM} мм · магнит с гистерезисом · митра {MITER_BUILD} · V/W/O/D (любая раскладка) ·
-        V/W/O/D — инструменты
+        build {APP_BUILD} · сетка {gridMm} мм · торец→угол · V/W/O/D
       </div>
     </div>
   );

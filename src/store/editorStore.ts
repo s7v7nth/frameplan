@@ -9,6 +9,7 @@ import {
   resolveDraftSnap,
   wallSegmentCollides,
   weldWallEndpoints,
+  gridStepForScale,
 } from '../domain/geometry';
 import type {
   FloorLevel,
@@ -148,25 +149,25 @@ export const useEditorStore = create<EditorState>()(
           }),
         })),
       beginWall: (p) => {
-        const { project } = get();
+        const { project, scale } = get();
         const walls = project.walls.filter((w) => w.floor === project.activeFloor);
-        const hit = resolveDraftSnap(p, walls);
+        const hit = resolveDraftSnap(p, walls, { scale });
         set({ draftStart: hit.point });
       },
       cancelDraft: () => set({ draftStart: null }),
       finishWall: (p) => {
         const start = get().draftStart;
         if (!start) return;
-        const { project, wallKind } = get();
+        const { project, wallKind, scale } = get();
         const walls = project.walls.filter((w) => w.floor === project.activeFloor);
         // p may already be snapped by canvas; resolve again for safety
-        let end = resolveDraftSnap(p, walls, { from: start }).point;
+        let end = resolveDraftSnap(p, walls, { from: start, scale }).point;
         if (Math.hypot(end.x - start.x, end.y - start.y) < 200) {
           set({ draftStart: null });
           return;
         }
         if (wallSegmentCollides(start, end, walls)) {
-          const retry = resolveDraftSnap(p, walls, { from: start });
+          const retry = resolveDraftSnap(p, walls, { from: start, scale });
           if (retry.kind === 'endpoint' && !wallSegmentCollides(start, retry.point, walls)) {
             end = retry.point;
           } else {
@@ -274,14 +275,18 @@ export const useEditorStore = create<EditorState>()(
         }));
       },
       moveFurniture: (id, x, y) =>
-        set((s) => ({
-          project: touch({
-            ...s.project,
-            furniture: s.project.furniture.map((f) =>
-              f.id === id ? { ...f, x: snapPoint({ x, y }).x, y: snapPoint({ x, y }).y } : f,
-            ),
-          }),
-        })),
+        set((s) => {
+          const g = gridStepForScale(s.scale);
+          const snapped = snapPoint({ x, y }, g);
+          return {
+            project: touch({
+              ...s.project,
+              furniture: s.project.furniture.map((f) =>
+                f.id === id ? { ...f, x: snapped.x, y: snapped.y } : f,
+              ),
+            }),
+          };
+        }),
       moveWallEndpoint: (id, end, point) =>
         set((s) => {
           const wall = s.project.walls.find((w) => w.id === id);
@@ -290,7 +295,11 @@ export const useEditorStore = create<EditorState>()(
             (w) => w.floor === s.project.activeFloor && w.id !== id,
           );
           const fixed = end === 'a' ? wall.b : wall.a;
-          const hit = resolveDraftSnap(point, others, { ignoreWallId: id, from: fixed });
+          const hit = resolveDraftSnap(point, others, {
+            ignoreWallId: id,
+            from: fixed,
+            scale: s.scale,
+          });
           let p = hit.point;
           if (wallSegmentCollides(fixed, p, others)) {
             if (hit.kind === 'endpoint' && !wallSegmentCollides(fixed, hit.point, others)) {
@@ -318,7 +327,11 @@ export const useEditorStore = create<EditorState>()(
           (w) => w.floor === s.project.activeFloor && w.id !== id,
         );
         const fixed = end === 'a' ? wall.b : wall.a;
-        const hit = resolveDraftSnap(point, others, { ignoreWallId: id, from: fixed });
+        const hit = resolveDraftSnap(point, others, {
+          ignoreWallId: id,
+          from: fixed,
+          scale: s.scale,
+        });
         if (wallSegmentCollides(fixed, hit.point, others)) return wall[end];
         return hit.point;
       },
@@ -334,7 +347,7 @@ export const useEditorStore = create<EditorState>()(
           const candidates: { dx: number; dy: number; dist: number }[] = [];
           for (const end of ['a', 'b'] as const) {
             const raw = { x: wall[end].x + dx, y: wall[end].y + dy };
-            const hit = resolveDraftSnap(raw, others);
+            const hit = resolveDraftSnap(raw, others, { scale: s.scale });
             if (hit.kind !== 'grid') {
               candidates.push({
                 dx: hit.point.x - wall[end].x,
@@ -352,6 +365,7 @@ export const useEditorStore = create<EditorState>()(
             const snapped = resolveDraftSnap(
               { x: wall.a.x + dx, y: wall.a.y + dy },
               others,
+              { scale: s.scale },
             ).point;
             adx = snapped.x - wall.a.x;
             ady = snapped.y - wall.a.y;
