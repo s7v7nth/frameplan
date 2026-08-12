@@ -52,6 +52,8 @@ const report = {
   stock6000: stock6,
   hasBoardCuts,
   bomStockLines: bomStock.length,
+  foundationBom: model.bom.some((b) => b.group === 'Фундамент'),
+  rooms: model.rooms.length,
   // Jacks must support header: jack top == header bottom on same wall
   jackHeaderBearing: (() => {
     const wallId = 'w1';
@@ -82,6 +84,7 @@ if (
   !report.stock6000 ||
   !report.hasBoardCuts ||
   report.bomStockLines < 1 ||
+  !report.foundationBom ||
   !report.jackHeaderBearing ||
   !report.jacksOutsideOpening ||
   !report.elevHasDims

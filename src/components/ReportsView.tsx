@@ -1,5 +1,7 @@
-import { useMemo } from 'react';
+import { useMemo, useState } from 'react';
 import { useEditorStore, useFrameModel } from '../store/editorStore';
+import { downloadProjectPdf, type PdfSection } from '../export/pdfReport';
+import { validateProject } from '../domain/validate';
 
 function money(n: number) {
   return new Intl.NumberFormat('ru-RU', {
@@ -27,9 +29,12 @@ const KIND_RU: Record<string, string> = {
 
 export function ReportsView() {
   const tab = useEditorStore((s) => s.tab);
+  const project = useEditorStore((s) => s.project);
   const model = useFrameModel();
+  const [pdfBusy, setPdfBusy] = useState(false);
 
   const bomTotal = useMemo(() => model.bom.reduce((s, l) => s + l.total, 0), [model.bom]);
+  const issues = useMemo(() => validateProject(project), [project]);
 
   const counts = useMemo(() => {
     const map = new Map<string, number>();
@@ -39,7 +44,30 @@ export function ReportsView() {
     return [...map.entries()].sort((a, b) => b[1] - a[1]);
   }, [model.members]);
 
+  const exportPdf = async (section: PdfSection) => {
+    setPdfBusy(true);
+    try {
+      await downloadProjectPdf(project, model, section);
+    } catch (err) {
+      console.error(err);
+      window.alert('Не удалось сформировать PDF.');
+    } finally {
+      setPdfBusy(false);
+    }
+  };
+
   if (tab === 'editor') return null;
+
+  const sectionForTab: PdfSection =
+    tab === 'frame'
+      ? 'frame'
+      : tab === 'cutting'
+        ? 'cutting'
+        : tab === 'estimate'
+          ? 'estimate'
+          : tab === 'thermal'
+            ? 'thermal'
+            : 'all';
 
   return (
     <div className="reports">
@@ -68,7 +96,45 @@ export function ReportsView() {
           <span className="k">Смета</span>
           <strong>{money(bomTotal)}</strong>
         </div>
+        <div className="summary-actions">
+          <button
+            type="button"
+            className="nav-btn"
+            disabled={pdfBusy}
+            onClick={() => void exportPdf(sectionForTab)}
+          >
+            {pdfBusy ? 'PDF…' : 'PDF вкладки'}
+          </button>
+          <button
+            type="button"
+            className="nav-btn primary"
+            disabled={pdfBusy}
+            onClick={() => void exportPdf('all')}
+          >
+            PDF весь отчёт
+          </button>
+        </div>
       </div>
+
+      {issues.length > 0 && (
+        <div className="report-issues">
+          {issues.map((issue, i) => (
+            <div key={i} className={issue.level === 'error' ? 'issue-error' : 'issue-warn'}>
+              {issue.message}
+            </div>
+          ))}
+        </div>
+      )}
+
+      {model.rooms.length > 0 && (
+        <div className="room-chips">
+          {model.rooms.map((r) => (
+            <span key={r.id} className="chip">
+              {r.label} ({r.floor + 1} эт.): <b>{r.areaM2.toFixed(1)} м²</b>
+            </span>
+          ))}
+        </div>
+      )}
 
       {tab === 'frame' && (
         <div className="report-grid">
@@ -115,10 +181,7 @@ export function ReportsView() {
               {model.projections.wallElevations.map((w) => (
                 <div key={w.wallId} className="elev-item">
                   <div className="elev-title">{w.title}</div>
-                  <div
-                    className="svg-frame"
-                    dangerouslySetInnerHTML={{ __html: w.svg }}
-                  />
+                  <div className="svg-frame" dangerouslySetInnerHTML={{ __html: w.svg }} />
                 </div>
               ))}
             </div>

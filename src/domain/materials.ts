@@ -136,6 +136,7 @@ export const DEFAULT_SETTINGS: ProjectSettings = {
   roofType: 'gable',
   roofPitchDeg: 30,
   overhangMm: 500,
+  foundationType: 'pile',
   exteriorCladding: 'vinyl_siding',
   interiorFinish: 'gypsum_board',
   floorFinish: 'osb_subfloor',

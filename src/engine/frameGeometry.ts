@@ -531,44 +531,94 @@ export function buildRoofMembers(
   const overhang = project.settings.overhangMm;
   const spacing = project.settings.joistSpacingMm;
   const section = project.settings.joistSectionMm;
+  // Ridge along the longer plan dimension (more realistic for gable/hip)
+  const ridgeAlongY = depth >= width;
+  const span = ridgeAlongY ? width : depth;
+  const ridgeLenBase = ridgeAlongY ? depth : width;
   const cx = (minX + maxX) / 2;
+  const cy = (minY + maxY) / 2;
 
   if (project.settings.roofType === 'gable' || project.settings.roofType === 'hip') {
-    const run = width / 2 + overhang;
-    const rafterLen = Math.round(run / Math.cos(pitch));
-    pushMember(members, lumber, {
-      kind: 'ridge',
-      label: 'Коньковый брус',
-      sectionMm: section,
-      lengthMm: Math.round(depth + overhang * 2),
-      floor: 'roof',
-      plan: { x1: cx, y1: minY - overhang, x2: cx, y2: maxY + overhang },
-    });
-    for (let y = minY - overhang; y <= maxY + overhang + 1; y += spacing) {
+    const run = span / 2 + overhang;
+    const rafterLen = Math.round(run / Math.max(0.2, Math.cos(pitch)));
+    // Hip: shorten ridge by roughly half-span on each end
+    const hipInset =
+      project.settings.roofType === 'hip' ? Math.min(span / 2, ridgeLenBase / 2) : 0;
+    const ridgeLen = Math.max(spacing, Math.round(ridgeLenBase + overhang * 2 - hipInset * 2));
+
+    if (ridgeAlongY) {
+      const y0 = minY - overhang + hipInset;
+      const y1 = maxY + overhang - hipInset;
       pushMember(members, lumber, {
-        kind: 'rafter',
-        label: 'Стропило',
+        kind: 'ridge',
+        label: 'Коньковый брус',
         sectionMm: section,
-        lengthMm: rafterLen,
+        lengthMm: ridgeLen,
         floor: 'roof',
-        plan: { x1: minX - overhang, y1: y, x2: cx, y2: y },
+        plan: { x1: cx, y1: y0, x2: cx, y2: y1 },
       });
+      for (let y = minY - overhang; y <= maxY + overhang + 1; y += spacing) {
+        pushMember(members, lumber, {
+          kind: 'rafter',
+          label: 'Стропило',
+          sectionMm: section,
+          lengthMm: rafterLen,
+          floor: 'roof',
+          plan: { x1: minX - overhang, y1: y, x2: cx, y2: y },
+        });
+        pushMember(members, lumber, {
+          kind: 'rafter',
+          label: 'Стропило',
+          sectionMm: section,
+          lengthMm: rafterLen,
+          floor: 'roof',
+          plan: { x1: maxX + overhang, y1: y, x2: cx, y2: y },
+        });
+      }
+    } else {
+      const x0 = minX - overhang + hipInset;
+      const x1 = maxX + overhang - hipInset;
       pushMember(members, lumber, {
-        kind: 'rafter',
-        label: 'Стропило',
+        kind: 'ridge',
+        label: 'Коньковый брус',
         sectionMm: section,
-        lengthMm: rafterLen,
+        lengthMm: ridgeLen,
         floor: 'roof',
-        plan: { x1: maxX + overhang, y1: y, x2: cx, y2: y },
+        plan: { x1: x0, y1: cy, x2: x1, y2: cy },
       });
+      for (let x = minX - overhang; x <= maxX + overhang + 1; x += spacing) {
+        pushMember(members, lumber, {
+          kind: 'rafter',
+          label: 'Стропило',
+          sectionMm: section,
+          lengthMm: rafterLen,
+          floor: 'roof',
+          plan: { x1: x, y1: minY - overhang, x2: x, y2: cy },
+        });
+        pushMember(members, lumber, {
+          kind: 'rafter',
+          label: 'Стропило',
+          sectionMm: section,
+          lengthMm: rafterLen,
+          floor: 'roof',
+          plan: { x1: x, y1: maxY + overhang, x2: x, y2: cy },
+        });
+      }
     }
+
     if (project.settings.roofType === 'hip') {
-      const hipLen = Math.round(Math.hypot(width / 2, depth / 2) / Math.cos(pitch));
+      const hipLen = Math.round(Math.hypot(width / 2, depth / 2) / Math.max(0.2, Math.cos(pitch)));
+      const ridgeEndA = ridgeAlongY
+        ? { x: cx, y: minY - overhang + hipInset }
+        : { x: minX - overhang + hipInset, y: cy };
+      const ridgeEndB = ridgeAlongY
+        ? { x: cx, y: maxY + overhang - hipInset }
+        : { x: maxX + overhang - hipInset, y: cy };
       const corners: [Point, Point][] = [
-        [{ x: minX - overhang, y: minY - overhang }, { x: cx, y: (minY + maxY) / 2 }],
-        [{ x: maxX + overhang, y: minY - overhang }, { x: cx, y: (minY + maxY) / 2 }],
-        [{ x: minX - overhang, y: maxY + overhang }, { x: cx, y: (minY + maxY) / 2 }],
-        [{ x: maxX + overhang, y: maxY + overhang }, { x: cx, y: (minY + maxY) / 2 }],
+        [{ x: minX - overhang, y: minY - overhang }, ridgeEndA],
+        [{ x: maxX + overhang, y: minY - overhang }, ridgeAlongY ? ridgeEndA : ridgeEndB],
+        [{ x: minX - overhang, y: maxY + overhang }, ridgeAlongY ? ridgeEndB : ridgeEndA],
+        [{ x: maxX + overhang, y: maxY + overhang }, ridgeEndB],
       ];
       for (const [a, b] of corners) {
         pushMember(members, lumber, {
@@ -582,27 +632,55 @@ export function buildRoofMembers(
       }
     }
   } else if (project.settings.roofType === 'shed') {
-    const shedLen = Math.round((width + overhang * 2) / Math.cos(pitch));
-    for (let y = minY - overhang; y <= maxY + overhang + 1; y += spacing) {
-      pushMember(members, lumber, {
-        kind: 'rafter',
-        label: 'Стропило односкатной кровли',
-        sectionMm: section,
-        lengthMm: shedLen,
-        floor: 'roof',
-        plan: { x1: minX - overhang, y1: y, x2: maxX + overhang, y2: y },
-      });
+    // Span across shorter direction for typical shed
+    if (ridgeAlongY) {
+      const shedLen = Math.round((width + overhang * 2) / Math.max(0.2, Math.cos(pitch)));
+      for (let y = minY - overhang; y <= maxY + overhang + 1; y += spacing) {
+        pushMember(members, lumber, {
+          kind: 'rafter',
+          label: 'Стропило односкатной кровли',
+          sectionMm: section,
+          lengthMm: shedLen,
+          floor: 'roof',
+          plan: { x1: minX - overhang, y1: y, x2: maxX + overhang, y2: y },
+        });
+      }
+    } else {
+      const shedLen = Math.round((depth + overhang * 2) / Math.max(0.2, Math.cos(pitch)));
+      for (let x = minX - overhang; x <= maxX + overhang + 1; x += spacing) {
+        pushMember(members, lumber, {
+          kind: 'rafter',
+          label: 'Стропило односкатной кровли',
+          sectionMm: section,
+          lengthMm: shedLen,
+          floor: 'roof',
+          plan: { x1: x, y1: minY - overhang, x2: x, y2: maxY + overhang },
+        });
+      }
     }
   } else {
-    for (let y = minY - overhang; y <= maxY + overhang + 1; y += spacing) {
-      pushMember(members, lumber, {
-        kind: 'joist',
-        label: 'Балка плоской кровли',
-        sectionMm: section,
-        lengthMm: Math.round(width + overhang * 2),
-        floor: 'roof',
-        plan: { x1: minX - overhang, y1: y, x2: maxX + overhang, y2: y },
-      });
+    if (ridgeAlongY) {
+      for (let y = minY - overhang; y <= maxY + overhang + 1; y += spacing) {
+        pushMember(members, lumber, {
+          kind: 'joist',
+          label: 'Балка плоской кровли',
+          sectionMm: section,
+          lengthMm: Math.round(width + overhang * 2),
+          floor: 'roof',
+          plan: { x1: minX - overhang, y1: y, x2: maxX + overhang, y2: y },
+        });
+      }
+    } else {
+      for (let x = minX - overhang; x <= maxX + overhang + 1; x += spacing) {
+        pushMember(members, lumber, {
+          kind: 'joist',
+          label: 'Балка плоской кровли',
+          sectionMm: section,
+          lengthMm: Math.round(depth + overhang * 2),
+          floor: 'roof',
+          plan: { x1: x, y1: minY - overhang, x2: x, y2: maxY + overhang },
+        });
+      }
     }
   }
 }
