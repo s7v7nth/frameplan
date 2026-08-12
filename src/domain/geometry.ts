@@ -75,13 +75,15 @@ export function magnetSnapPoint(
   const grid = opts.grid ?? 100;
   const endpointBias = opts.endpointBiasMm ?? ENDPOINT_BIAS_MM;
 
-  let bestEnd: MagnetHit | null = null;
-  let bestSeg: MagnetHit | null = null;
+  const best = {
+    end: null as MagnetHit | null,
+    seg: null as MagnetHit | null,
+  };
 
   const considerEndpoint = (point: Point, wallId: string, d: number, withinMagnet: boolean) => {
     if (withinMagnet && d > magnetMm) return;
-    if (!bestEnd || d < bestEnd.strength) {
-      bestEnd = { point: { ...point }, kind: 'endpoint', wallId, strength: d };
+    if (!best.end || d < best.end.strength) {
+      best.end = { point: { ...point }, kind: 'endpoint', wallId, strength: d };
     }
   };
 
@@ -111,8 +113,8 @@ export function magnetSnapPoint(
       continue;
     }
 
-    if (!bestSeg || hit.dist < bestSeg.strength) {
-      bestSeg = {
+    if (!best.seg || hit.dist < best.seg.strength) {
+      best.seg = {
         point: { ...hit.point },
         kind: 'segment',
         wallId: wall.id,
@@ -121,10 +123,10 @@ export function magnetSnapPoint(
     }
   }
 
-  if (bestEnd && (!bestSeg || bestEnd.strength <= bestSeg.strength + endpointBias)) {
-    return bestEnd;
+  if (best.end && (!best.seg || best.end.strength <= best.seg.strength + endpointBias)) {
+    return best.end;
   }
-  if (bestSeg) return bestSeg;
+  if (best.seg) return best.seg;
 
   if (opts.freeWhenFar) {
     return { point: { x: p.x, y: p.y }, kind: 'grid', strength: Infinity };
