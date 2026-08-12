@@ -96,12 +96,6 @@ function unitAndNormal(a: Point, b: Point): { u: Point; n: Point; len: number } 
   return { u, n: { x: -u.y, y: u.x }, len };
 }
 
-function lineIntersect(p1: Point, d1: Point, p2: Point, d2: Point): Point | null {
-  const den = d1.x * d2.y - d1.y * d2.x;
-  if (Math.abs(den) < 1e-8) return null;
-  const t = ((p2.x - p1.x) * d2.y - (p2.y - p1.y) * d2.x) / den;
-  return { x: p1.x + t * d1.x, y: p1.y + t * d1.y };
-}
 
 /**
  * Draft snap priority:
@@ -319,24 +313,18 @@ function dirFromTip(tip: Point, wall: Wall): Point | null {
 }
 
 /**
- * Filled wall footprint with mitered corners at shared tips.
- * Outer/inner faces meet at one shared outer and one shared inner corner —
- * no overlapping rectangles ("угол на угол").
+ * Filled wall footprint at shared tips: through-wall + butt (в торец).
+ * No 45° miter — that looked like "triangle in triangle".
  *
- * Inner/outer are chosen by the wedge bisector between the two walls (not
- * closest-to-butt, and not left/right-from-a→b — both fail at end B / 90° ties).
- * Then each hit is assigned to this wall's left/right offset by proximity to the butt.
+ * One wall keeps a rectangular end past the tip (covers outer corner);
+ * the other butts flat against its face. Centerlines can still share the tip
+ * for California nodes.
  */
-export const MITER_BUILD = 'bisector-v3';
-
 export function wallPolygonPoints(wall: Wall, all: Wall[]): number[] {
   const basis = unitAndNormal(wall.a, wall.b);
   if (!basis) return [];
-  const { u, n } = basis;
+  const { n } = basis;
   const h = wall.thickness / 2;
-
-  const leftLine = { p: { x: wall.a.x + n.x * h, y: wall.a.y + n.y * h }, d: u };
-  const rightLine = { p: { x: wall.a.x - n.x * h, y: wall.a.y - n.y * h }, d: u };
 
   const endPoints = (tip: Point): { left: Point; right: Point } => {
     const mates = matesAt(tip, wall, all);
@@ -353,51 +341,21 @@ export function wallPolygonPoints(wall: Wall, all: Wall[]): number[] {
       const toOther = dirFromTip(tip, mate);
       if (!toOther) continue;
       const cross = along.x * toOther.y - along.y * toOther.x;
-      if (Math.abs(cross) < 0.55) continue;
+      if (Math.abs(cross) < 0.55) continue; // near-collinear: keep square butt
 
-      const mb = unitAndNormal(mate.a, mate.b);
-      if (!mb) continue;
       const mh = mate.thickness / 2;
-      const mLeft = { p: { x: mate.a.x + mb.n.x * mh, y: mate.a.y + mb.n.y * mh }, d: mb.u };
-      const mRight = { p: { x: mate.a.x - mb.n.x * mh, y: mate.a.y - mb.n.y * mh }, d: mb.u };
-
-      const hits = [
-        lineIntersect(leftLine.p, leftLine.d, mLeft.p, mLeft.d),
-        lineIntersect(leftLine.p, leftLine.d, mRight.p, mRight.d),
-        lineIntersect(rightLine.p, rightLine.d, mLeft.p, mLeft.d),
-        lineIntersect(rightLine.p, rightLine.d, mRight.p, mRight.d),
-      ].filter(Boolean) as Point[];
-      if (hits.length < 2) continue;
-
-      // Unit bisector of the wedge between the two rays from the tip → interior
-      const bx = along.x + toOther.x;
-      const by = along.y + toOther.y;
-      const bl = Math.hypot(bx, by) || 1;
-      const bisX = bx / bl;
-      const bisY = by / bl;
-
-      let inner = hits[0];
-      let outer = hits[0];
-      let innerDot = -Infinity;
-      let outerDot = Infinity;
-      for (const hit of hits) {
-        const dot = (hit.x - tip.x) * bisX + (hit.y - tip.y) * bisY;
-        if (dot > innerDot) {
-          innerDot = dot;
-          inner = hit;
-        }
-        if (dot < outerDot) {
-          outerDot = dot;
-          outer = hit;
-        }
+      // Stable owner of the outer corner — not a diagonal miter
+      const isThrough = wall.id <= mate.id;
+      let end: Point;
+      if (isThrough) {
+        // Extend past tip opposite along so the outer corner is covered
+        end = { x: tip.x - along.x * mh, y: tip.y - along.y * mh };
+      } else {
+        // Flat butt against the through wall's face
+        end = { x: tip.x + along.x * mh, y: tip.y + along.y * mh };
       }
-      if (inner === outer) continue;
-
-      // Map onto this wall's winding (left/right of a→b), not of tip→along
-      const left =
-        dist(inner, buttLeft) <= dist(outer, buttLeft) ? inner : outer;
-      const right = left === inner ? outer : inner;
-
+      const left = { x: end.x + n.x * h, y: end.y + n.y * h };
+      const right = { x: end.x - n.x * h, y: end.y - n.y * h };
       const score = Math.abs(cross);
       if (!best || score > best.score) best = { score, left, right };
     }
@@ -408,7 +366,6 @@ export function wallPolygonPoints(wall: Wall, all: Wall[]): number[] {
 
   const A = endPoints(wall.a);
   const B = endPoints(wall.b);
-  // Quad: A-left → B-left → B-right → A-right
   return [A.left.x, A.left.y, B.left.x, B.left.y, B.right.x, B.right.y, A.right.x, A.right.y];
 }
 
