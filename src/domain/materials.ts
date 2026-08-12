@@ -132,7 +132,7 @@ export const DEFAULT_SETTINGS: ProjectSettings = {
   studSpacingMm: 600,
   joistSpacingMm: 600,
   studSectionMm: { width: 50, depth: 150 },
-  joistSectionMm: { width: 50, depth: 200 },
+  joistSectionMm: { width: 50, depth: 250 },
   roofType: 'gable',
   roofPitchDeg: 30,
   overhangMm: 500,

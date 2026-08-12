@@ -6,8 +6,9 @@ import {
   snapPoint,
   uid,
   wallLength,
-  magnetSnapPoint,
+  resolveDraftSnap,
   wallSegmentCollides,
+  weldWallEndpoints,
 } from '../domain/geometry';
 import type {
   FloorLevel,
@@ -63,7 +64,7 @@ interface EditorState {
   draftStart: Point | null;
   scale: number;
   offset: Point;
-  tab: 'editor' | 'frame' | 'cutting' | 'estimate' | 'thermal';
+  tab: 'editor' | 'frame' | 'structural' | 'cutting' | 'estimate' | 'thermal';
   setTool: (t: Tool) => void;
   setWallKind: (k: WallKind) => void;
   setTab: (t: EditorState['tab']) => void;
@@ -149,7 +150,7 @@ export const useEditorStore = create<EditorState>()(
       beginWall: (p) => {
         const { project } = get();
         const walls = project.walls.filter((w) => w.floor === project.activeFloor);
-        const hit = magnetSnapPoint(p, walls, { freeWhenFar: false });
+        const hit = resolveDraftSnap(p, walls);
         set({ draftStart: hit.point });
       },
       cancelDraft: () => set({ draftStart: null }),
@@ -158,21 +159,19 @@ export const useEditorStore = create<EditorState>()(
         if (!start) return;
         const { project, wallKind } = get();
         const walls = project.walls.filter((w) => w.floor === project.activeFloor);
-        const hit = magnetSnapPoint(p, walls, { freeWhenFar: false });
-        let end = hit.point;
+        // p may already be snapped by canvas; resolve again for safety
+        let end = resolveDraftSnap(p, walls, { from: start }).point;
         if (Math.hypot(end.x - start.x, end.y - start.y) < 200) {
           set({ draftStart: null });
           return;
         }
-        // Prefer magnet join; reject X-crossing through other walls
         if (wallSegmentCollides(start, end, walls)) {
-          // Try pure magnet to nearest endpoint only
-          const endOnly = magnetSnapPoint(p, walls, { freeWhenFar: true, magnetMm: 400 });
-          if (endOnly.kind === 'endpoint' && !wallSegmentCollides(start, endOnly.point, walls)) {
-            end = endOnly.point;
+          const retry = resolveDraftSnap(p, walls, { from: start });
+          if (retry.kind === 'endpoint' && !wallSegmentCollides(start, retry.point, walls)) {
+            end = retry.point;
           } else {
             set({ draftStart: null });
-            return; // refuse invalid wall
+            return;
           }
         }
         const wall: Wall = {
@@ -184,10 +183,11 @@ export const useEditorStore = create<EditorState>()(
           height: project.settings.floorHeightMm,
           floor: project.activeFloor,
         };
+        const welded = weldWallEndpoints([...project.walls, wall], project.activeFloor);
         set({
           draftStart: null,
           selectedId: wall.id,
-          project: touch({ ...project, walls: [...project.walls, wall] }),
+          project: touch({ ...project, walls: welded }),
         });
       },
       addOpeningAt: (world, type) => {
@@ -289,36 +289,24 @@ export const useEditorStore = create<EditorState>()(
           const others = s.project.walls.filter(
             (w) => w.floor === s.project.activeFloor && w.id !== id,
           );
-          const hit = magnetSnapPoint(point, others, { ignoreWallId: id, freeWhenFar: true });
-          let p =
-            hit.kind === 'grid'
-              ? { x: Math.round(point.x), y: Math.round(point.y) }
-              : hit.point;
           const fixed = end === 'a' ? wall.b : wall.a;
+          const hit = resolveDraftSnap(point, others, { ignoreWallId: id, from: fixed });
+          let p = hit.point;
           if (wallSegmentCollides(fixed, p, others)) {
-            // Prefer joining to a wall instead of crossing through it
-            if (hit.kind !== 'grid' && !wallSegmentCollides(fixed, hit.point, others)) {
+            if (hit.kind === 'endpoint' && !wallSegmentCollides(fixed, hit.point, others)) {
               p = hit.point;
             } else {
-              const retry = magnetSnapPoint(point, others, {
-                ignoreWallId: id,
-                freeWhenFar: true,
-                magnetMm: 400,
-              });
-              if (retry.kind !== 'grid' && !wallSegmentCollides(fixed, retry.point, others)) {
-                p = retry.point;
-              } else {
-                return s; // block penetration
-              }
+              return s;
             }
           }
           if (Math.hypot(p.x - fixed.x, p.y - fixed.y) < 200) return s;
+          const walls = s.project.walls.map((w) =>
+            w.id === id ? { ...w, [end]: p } : w,
+          );
           return {
             project: touch({
               ...s.project,
-              walls: s.project.walls.map((w) =>
-                w.id === id ? { ...w, [end]: p } : w,
-              ),
+              walls: weldWallEndpoints(walls, s.project.activeFloor),
             }),
           };
         }),
@@ -329,17 +317,10 @@ export const useEditorStore = create<EditorState>()(
         const others = s.project.walls.filter(
           (w) => w.floor === s.project.activeFloor && w.id !== id,
         );
-        const hit = magnetSnapPoint(point, others, { ignoreWallId: id, freeWhenFar: true });
-        let p =
-          hit.kind === 'grid'
-            ? { x: Math.round(point.x), y: Math.round(point.y) }
-            : hit.point;
         const fixed = end === 'a' ? wall.b : wall.a;
-        if (wallSegmentCollides(fixed, p, others)) {
-          if (hit.kind !== 'grid') return wall[end]; // show stuck at last valid via store; preview keep old
-          return wall[end];
-        }
-        return p;
+        const hit = resolveDraftSnap(point, others, { ignoreWallId: id, from: fixed });
+        if (wallSegmentCollides(fixed, hit.point, others)) return wall[end];
+        return hit.point;
       },
       moveWallBy: (id, dx, dy) =>
         set((s) => {
@@ -353,7 +334,7 @@ export const useEditorStore = create<EditorState>()(
           const candidates: { dx: number; dy: number; dist: number }[] = [];
           for (const end of ['a', 'b'] as const) {
             const raw = { x: wall[end].x + dx, y: wall[end].y + dy };
-            const hit = magnetSnapPoint(raw, others, { freeWhenFar: true });
+            const hit = resolveDraftSnap(raw, others);
             if (hit.kind !== 'grid') {
               candidates.push({
                 dx: hit.point.x - wall[end].x,
@@ -366,17 +347,25 @@ export const useEditorStore = create<EditorState>()(
             candidates.sort((a, b) => a.dist - b.dist);
             adx = candidates[0].dx;
             ady = candidates[0].dy;
+          } else {
+            // Keep translation on grid
+            const snapped = resolveDraftSnap(
+              { x: wall.a.x + dx, y: wall.a.y + dy },
+              others,
+            ).point;
+            adx = snapped.x - wall.a.x;
+            ady = snapped.y - wall.a.y;
           }
           const nextA = { x: Math.round(wall.a.x + adx), y: Math.round(wall.a.y + ady) };
           const nextB = { x: Math.round(wall.b.x + adx), y: Math.round(wall.b.y + ady) };
           if (wallSegmentCollides(nextA, nextB, others)) return s;
+          const walls = s.project.walls.map((w) =>
+            w.id === id ? { ...w, a: nextA, b: nextB } : w,
+          );
           return {
             project: touch({
               ...s.project,
-              walls: s.project.walls.map((w) => {
-                if (w.id !== id) return w;
-                return { ...w, a: nextA, b: nextB };
-              }),
+              walls: weldWallEndpoints(walls, s.project.activeFloor),
             }),
           };
         }),

@@ -227,6 +227,7 @@ export interface FrameModel {
   cutting: CuttingStock[];
   bom: BomLine[];
   heatLoss: HeatLossResult;
+  structural: StructuralReport;
   projections: {
     planSvg: string;
     elevationFrontSvg: string;
@@ -242,4 +243,45 @@ export interface FrameModel {
     studCount: number;
     lumberVolumeM3: number;
   };
+}
+
+export type CheckSeverity = 'ok' | 'warn' | 'fail';
+
+export interface StructuralCheck {
+  id: string;
+  category: 'floor' | 'header' | 'roof' | 'wall' | 'loads';
+  severity: CheckSeverity;
+  title: string;
+  detail: string;
+  actual?: string;
+  limit?: string;
+  suggestion?: string;
+}
+
+export interface MemberForceSummary {
+  id: string;
+  label: string;
+  spanM: number;
+  sectionMm: { width: number; depth: number };
+  spacingMm: number;
+  lineLoadKNpm: number;
+  momentKNm: number;
+  shearKN: number;
+  deflectionMm: number;
+  deflectionLimitMm: number;
+  okDeflection: boolean;
+  okSpanTable: boolean;
+  maxSpanTableM: number;
+}
+
+export interface StructuralReport {
+  checks: StructuralCheck[];
+  members: MemberForceSummary[];
+  summary: {
+    ok: number;
+    warn: number;
+    fail: number;
+    worst: CheckSeverity;
+  };
+  assumptions: string[];
 }

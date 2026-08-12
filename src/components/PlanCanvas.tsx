@@ -6,15 +6,19 @@ import {
   wallLength,
   pointAlongWall,
   projectPointOnSegment,
-  magnetSnapPoint,
+  resolveDraftSnap,
   WALL_MAGNET_MM,
+  GRID_MM,
+  wallPolygonPoints,
+  wallCenterlinePoints,
+  MITER_BUILD,
 } from '../domain/geometry';
 import { useEditorStore } from '../store/editorStore';
 import type { Tool } from '../domain/types';
 
 const TOOLS: { id: Tool; label: string; hint: string }[] = [
   { id: 'select', label: 'Выбор', hint: 'ЛКМ по пустому — панорама' },
-  { id: 'wall', label: 'Стена', hint: 'Два клика · магнитится к стенам' },
+  { id: 'wall', label: 'Стена', hint: 'Два клика · сетка 100 мм · магнит к стенам' },
   { id: 'window', label: 'Окно', hint: 'Клик по стене' },
   { id: 'door', label: 'Дверь', hint: 'Клик по стене' },
   { id: 'delete', label: 'Удалить', hint: 'Клик по объекту' },
@@ -34,7 +38,11 @@ export function PlanCanvas() {
   const [spacePan, setSpacePan] = useState(false);
   const [panning, setPanning] = useState(false);
   const [hover, setHover] = useState<{ x: number; y: number } | null>(null);
-  const [magnetAt, setMagnetAt] = useState<{ x: number; y: number } | null>(null);
+  const [magnetAt, setMagnetAt] = useState<{
+    x: number;
+    y: number;
+    kind: 'endpoint' | 'segment' | 'grid';
+  } | null>(null);
 
   const {
     project,
@@ -155,7 +163,7 @@ export function PlanCanvas() {
 
     if (tool === 'wall') {
       if (!draftStart) beginWall(world);
-      else finishWall(world);
+      else finishWall(resolveDraftSnap(world, walls, { from: draftStart }).point);
       return;
     }
     if (tool === 'window') {
@@ -224,11 +232,14 @@ export function PlanCanvas() {
           if (!pos) return;
           const world = toWorld(pos.x, pos.y);
           if (tool === 'wall') {
-            const hit = magnetSnapPoint(world, walls, { freeWhenFar: true });
-            setHover(hit.kind === 'grid' ? world : hit.point);
-            setMagnetAt(hit.kind === 'grid' ? null : hit.point);
+            const hit = resolveDraftSnap(world, walls, {
+              from: draftStart ?? undefined,
+            });
+            setHover(hit.point);
+            setMagnetAt({ x: hit.point.x, y: hit.point.y, kind: hit.kind });
           } else {
             setHover(world);
+            setMagnetAt(null);
           }
         }}
         onWheel={(e) => {
@@ -266,14 +277,26 @@ export function PlanCanvas() {
 
           {walls.map((wall) => {
             const selected = selectedId === wall.id;
+            const poly = wallPolygonPoints(wall, walls);
+            const fill = selected
+              ? '#c45c26'
+              : wall.kind === 'exterior'
+                ? '#1f3a2e'
+                : '#64748b';
+            const stroke = selected ? '#9a3412' : wall.kind === 'exterior' ? '#14231c' : '#475569';
+            const center = wallCenterlinePoints(wall, walls);
             return (
               <Group key={wall.id}>
                 <Line
-                  points={[wall.a.x, wall.a.y, wall.b.x, wall.b.y]}
-                  stroke={selected ? '#c45c26' : wall.kind === 'exterior' ? '#1f3a2e' : '#64748b'}
-                  strokeWidth={selected ? 220 : wall.thickness}
-                  lineCap="square"
-                  hitStrokeWidth={300}
+                  points={poly}
+                  closed
+                  fill={fill}
+                  stroke={stroke}
+                  // Thin outline only — thick stroke re-creates corner overlap on miters
+                  strokeWidth={selected ? 10 : 3}
+                  lineJoin="miter"
+                  miterLimit={2}
+                  perfectDrawEnabled={false}
                   draggable={tool === 'select' && !spacePan && !panning}
                   onDragStart={(e) => {
                     wallDragRef.current = { id: wall.id, x: e.target.x(), y: e.target.y() };
@@ -300,17 +323,19 @@ export function PlanCanvas() {
                       if (!pos) return;
                       const world = toWorld(pos.x, pos.y);
                       if (!draftStart) beginWall(world);
-                      else finishWall(world);
+                      else finishWall(resolveDraftSnap(world, walls, { from: draftStart }).point);
                       return;
                     }
                     select(wall.id);
                     if (tool === 'delete') deleteSelected();
                   }}
                 />
+                {/* Inset centerline — never crosses into the miter square */}
                 <Line
-                  points={[wall.a.x, wall.a.y, wall.b.x, wall.b.y]}
-                  stroke="#f4f7f2"
-                  strokeWidth={Math.max(40, wall.thickness - 80)}
+                  points={center}
+                  stroke="rgba(244,247,242,0.35)"
+                  strokeWidth={10}
+                  lineCap="butt"
                   listening={false}
                 />
                 <Text
@@ -345,7 +370,11 @@ export function PlanCanvas() {
                           const magnetized =
                             Math.hypot(snapped.x - raw.x, snapped.y - raw.y) > 0.5;
                           e.target.position(snapped);
-                          setMagnetAt(magnetized ? snapped : null);
+                          setMagnetAt(
+                            magnetized
+                              ? { x: snapped.x, y: snapped.y, kind: 'endpoint' }
+                              : { x: snapped.x, y: snapped.y, kind: 'grid' },
+                          );
                           moveWallEndpoint(wall.id, end, raw);
                         }}
                         onDragEnd={() => setMagnetAt(null)}
@@ -500,18 +529,36 @@ export function PlanCanvas() {
             </Group>
           ))}
 
-          {magnetAt && (
+          {magnetAt && tool === 'wall' && (
             <Group listening={false}>
-              <Circle
-                x={magnetAt.x}
-                y={magnetAt.y}
-                radius={WALL_MAGNET_MM}
-                stroke="#c45c26"
-                strokeWidth={20}
-                dash={[80, 60]}
-                opacity={0.45}
-              />
-              <Circle x={magnetAt.x} y={magnetAt.y} radius={70} fill="#c45c26" opacity={0.9} />
+              {magnetAt.kind === 'grid' ? (
+                <>
+                  <Line
+                    points={[magnetAt.x - 120, magnetAt.y, magnetAt.x + 120, magnetAt.y]}
+                    stroke="#2563eb"
+                    strokeWidth={24}
+                  />
+                  <Line
+                    points={[magnetAt.x, magnetAt.y - 120, magnetAt.x, magnetAt.y + 120]}
+                    stroke="#2563eb"
+                    strokeWidth={24}
+                  />
+                  <Circle x={magnetAt.x} y={magnetAt.y} radius={50} fill="#2563eb" opacity={0.85} />
+                </>
+              ) : (
+                <>
+                  <Circle
+                    x={magnetAt.x}
+                    y={magnetAt.y}
+                    radius={WALL_MAGNET_MM}
+                    stroke="#c45c26"
+                    strokeWidth={20}
+                    dash={[80, 60]}
+                    opacity={0.45}
+                  />
+                  <Circle x={magnetAt.x} y={magnetAt.y} radius={70} fill="#c45c26" opacity={0.9} />
+                </>
+              )}
             </Group>
           )}
 
@@ -527,12 +574,22 @@ export function PlanCanvas() {
           {draftStart && tool === 'wall' && (
             <Circle x={draftStart.x} y={draftStart.y} radius={80} fill="#c45c26" listening={false} />
           )}
+          {draftStart && hover && tool === 'wall' && (
+            <Text
+              x={(draftStart.x + hover.x) / 2}
+              y={(draftStart.y + hover.y) / 2 - 160}
+              text={`${(Math.hypot(hover.x - draftStart.x, hover.y - draftStart.y) / 1000).toFixed(2)} м`}
+              fontSize={130}
+              fill="#c45c26"
+              listening={false}
+            />
+          )}
         </Layer>
       </Stage>
 
       <div className="canvas-hint">
-        ЛКМ по пустому — панорама · Колесо — масштаб · ПКМ/СКМ — панорама · Концы стен: магнит +
-        без пересечений · V/W/O/D — инструменты
+        Сетка {GRID_MM} мм (синий крест) · магнит к торцу/грани стены (оранжевый) · митра {MITER_BUILD} ·
+        V/W/O/D — инструменты
       </div>
     </div>
   );
