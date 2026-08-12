@@ -366,6 +366,43 @@ if (!hOk || !vOk) {
   process.exit(1);
 }
 
+// Same L but second wall drawn from the FIRST wall's B tip going down (UI case)
+const polyWallsB = [
+  {
+    id: 'bh',
+    a: { x: 0, y: 0 },
+    b: { x: 2000, y: 0 },
+    thickness: 200,
+    kind: 'exterior' as const,
+    height: 2700,
+    floor: 0 as const,
+  },
+  {
+    id: 'bv',
+    a: { x: 2000, y: 0 },
+    b: { x: 2000, y: -900 },
+    thickness: 200,
+    kind: 'exterior' as const,
+    height: 2700,
+    floor: 0 as const,
+  },
+];
+const polyHB = wallPolygonPoints(polyWallsB[0], polyWallsB);
+const polyVB = wallPolygonPoints(polyWallsB[1], polyWallsB);
+// Outer (2100,100), inner (1900,-100); must NOT have anti-miter (2100,-100)/(1900,100) as the only pair
+const bOk =
+  near(polyHB, 2100, 100) &&
+  near(polyHB, 1900, -100) &&
+  near(polyVB, 2100, 100) &&
+  near(polyVB, 1900, -100) &&
+  !near(polyHB, 2100, -100) &&
+  !near(polyHB, 1900, 100);
+console.log('polyMiterAtB', { polyHB, polyVB, bOk });
+if (!bOk) {
+  console.error('Polygon miter at end B failed', { polyHB, polyVB });
+  process.exit(1);
+}
+
 // Corner node assembly after tip-to-tip join
 const cornerProject: Project = {
   ...project,

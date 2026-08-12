@@ -258,9 +258,9 @@ function dirFromTip(tip: Point, wall: Wall): Point | null {
  * Outer/inner faces meet at one shared outer and one shared inner corner —
  * no overlapping rectangles ("угол на угол").
  *
- * At a corner, pick intersections by turn direction (not closest-to-butt):
- * for a 90° L both candidate hits are equidistant from the butt, so closest
- * wrongly picks the exterior for the interior side.
+ * Inner/outer are chosen by the wedge bisector between the two walls (not
+ * closest-to-butt, and not left/right-from-a→b — both fail at end B / 90° ties).
+ * Then each hit is assigned to this wall's left/right offset by proximity to the butt.
  */
 export function wallPolygonPoints(wall: Wall, all: Wall[]): number[] {
   const basis = unitAndNormal(wall.a, wall.b);
@@ -285,7 +285,6 @@ export function wallPolygonPoints(wall: Wall, all: Wall[]): number[] {
     for (const mate of mates) {
       const toOther = dirFromTip(tip, mate);
       if (!toOther) continue;
-      // |along × toOther| ≈ 1 for perpendicular; skip near-collinear joins
       const cross = along.x * toOther.y - along.y * toOther.x;
       if (Math.abs(cross) < 0.55) continue;
 
@@ -295,21 +294,43 @@ export function wallPolygonPoints(wall: Wall, all: Wall[]): number[] {
       const mLeft = { p: { x: mate.a.x + mb.n.x * mh, y: mate.a.y + mb.n.y * mh }, d: mb.u };
       const mRight = { p: { x: mate.a.x - mb.n.x * mh, y: mate.a.y - mb.n.y * mh }, d: mb.u };
 
-      // Wedge between `along` and `toOther` is the interior of the corner.
-      // cross > 0 → mate is on the left of this wall → left faces the wedge.
-      let inner: Point | null;
-      let outer: Point | null;
-      if (cross > 0) {
-        inner = lineIntersect(leftLine.p, leftLine.d, mRight.p, mRight.d);
-        outer = lineIntersect(rightLine.p, rightLine.d, mLeft.p, mLeft.d);
-      } else {
-        inner = lineIntersect(rightLine.p, rightLine.d, mLeft.p, mLeft.d);
-        outer = lineIntersect(leftLine.p, leftLine.d, mRight.p, mRight.d);
-      }
-      if (!inner || !outer) continue;
+      const hits = [
+        lineIntersect(leftLine.p, leftLine.d, mLeft.p, mLeft.d),
+        lineIntersect(leftLine.p, leftLine.d, mRight.p, mRight.d),
+        lineIntersect(rightLine.p, rightLine.d, mLeft.p, mLeft.d),
+        lineIntersect(rightLine.p, rightLine.d, mRight.p, mRight.d),
+      ].filter(Boolean) as Point[];
+      if (hits.length < 2) continue;
 
-      const left = cross > 0 ? inner : outer;
-      const right = cross > 0 ? outer : inner;
+      // Unit bisector of the wedge between the two rays from the tip → interior
+      const bx = along.x + toOther.x;
+      const by = along.y + toOther.y;
+      const bl = Math.hypot(bx, by) || 1;
+      const bisX = bx / bl;
+      const bisY = by / bl;
+
+      let inner = hits[0];
+      let outer = hits[0];
+      let innerDot = -Infinity;
+      let outerDot = Infinity;
+      for (const hit of hits) {
+        const dot = (hit.x - tip.x) * bisX + (hit.y - tip.y) * bisY;
+        if (dot > innerDot) {
+          innerDot = dot;
+          inner = hit;
+        }
+        if (dot < outerDot) {
+          outerDot = dot;
+          outer = hit;
+        }
+      }
+      if (inner === outer) continue;
+
+      // Map onto this wall's winding (left/right of a→b), not of tip→along
+      const left =
+        dist(inner, buttLeft) <= dist(outer, buttLeft) ? inner : outer;
+      const right = left === inner ? outer : inner;
+
       const score = Math.abs(cross);
       if (!best || score > best.score) best = { score, left, right };
     }
