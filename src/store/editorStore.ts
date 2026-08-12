@@ -22,6 +22,8 @@ import type {
 } from '../domain/types';
 import { generateFrameModel } from '../engine/frameEngine';
 
+const HISTORY_LIMIT = 50;
+
 function demoProject(): Project {
   const w1 = uid('wall');
   const w2 = uid('wall');
@@ -34,7 +36,13 @@ function demoProject(): Project {
     units: 'mm',
     activeFloor: 0,
     updatedAt: new Date().toISOString(),
-    settings: { ...DEFAULT_SETTINGS, insulation: { ...DEFAULT_SETTINGS.insulation }, climate: { ...DEFAULT_SETTINGS.climate }, studSectionMm: { ...DEFAULT_SETTINGS.studSectionMm }, joistSectionMm: { ...DEFAULT_SETTINGS.joistSectionMm } },
+    settings: {
+      ...DEFAULT_SETTINGS,
+      insulation: { ...DEFAULT_SETTINGS.insulation },
+      climate: { ...DEFAULT_SETTINGS.climate },
+      studSectionMm: { ...DEFAULT_SETTINGS.studSectionMm },
+      joistSectionMm: { ...DEFAULT_SETTINGS.joistSectionMm },
+    },
     walls: [
       { id: w1, a: { x: 0, y: 0 }, b: { x: 8000, y: 0 }, thickness: 200, kind: 'exterior', height: 2700, floor: 0 },
       { id: w2, a: { x: 8000, y: 0 }, b: { x: 8000, y: 6000 }, thickness: 200, kind: 'exterior', height: 2700, floor: 0 },
@@ -55,8 +63,14 @@ function demoProject(): Project {
   };
 }
 
+function cloneProject(p: Project): Project {
+  return structuredClone(p);
+}
+
 interface EditorState {
   project: Project;
+  past: Project[];
+  future: Project[];
   tool: Tool;
   wallKind: WallKind;
   selectedId: string | null;
@@ -93,16 +107,42 @@ interface EditorState {
   copyFloorPlan: (from: FloorLevel, to: FloorLevel) => void;
   loadProject: (p: Project) => void;
   exportJson: () => string;
+  /** Snapshot current project before a gesture (drag) or batch edit */
+  captureHistory: () => void;
+  undo: () => void;
+  redo: () => void;
+  canUndo: () => boolean;
+  canRedo: () => boolean;
 }
 
 function touch(project: Project): Project {
   return { ...project, updatedAt: new Date().toISOString() };
 }
 
+type SetFn = (
+  partial:
+    | Partial<EditorState>
+    | ((s: EditorState) => Partial<EditorState>),
+) => void;
+type GetFn = () => EditorState;
+
+function pushPast(get: GetFn, set: SetFn) {
+  const { project, past } = get();
+  const nextPast = [...past, cloneProject(project)].slice(-HISTORY_LIMIT);
+  set({ past: nextPast, future: [] });
+}
+
+function setProject(get: GetFn, set: SetFn, project: Project, extra: Partial<EditorState> = {}) {
+  pushPast(get, set);
+  set({ project: touch(project), ...extra });
+}
+
 export const useEditorStore = create<EditorState>()(
   persist(
     (set, get) => ({
       project: demoProject(),
+      past: [],
+      future: [],
       tool: 'select',
       wallKind: 'exterior',
       selectedId: null,
@@ -118,7 +158,8 @@ export const useEditorStore = create<EditorState>()(
       select: (selectedId) => set({ selectedId }),
       setScale: (scale) => set({ scale }),
       setOffset: (offset) => set({ offset }),
-      setProjectName: (name) => set((s) => ({ project: touch({ ...s.project, name }) })),
+      setProjectName: (name) =>
+        set((s) => ({ project: touch({ ...s.project, name }) })),
       updateSettings: (patch) =>
         set((s) => ({
           project: touch({
@@ -164,15 +205,13 @@ export const useEditorStore = create<EditorState>()(
           set({ draftStart: null });
           return;
         }
-        // Prefer magnet join; reject X-crossing through other walls
         if (wallSegmentCollides(start, end, walls)) {
-          // Try pure magnet to nearest endpoint only
           const endOnly = magnetSnapPoint(p, walls, { freeWhenFar: true, magnetMm: 400 });
           if (endOnly.kind === 'endpoint' && !wallSegmentCollides(start, endOnly.point, walls)) {
             end = endOnly.point;
           } else {
             set({ draftStart: null });
-            return; // refuse invalid wall
+            return;
           }
         }
         const wall: Wall = {
@@ -184,11 +223,12 @@ export const useEditorStore = create<EditorState>()(
           height: project.settings.floorHeightMm,
           floor: project.activeFloor,
         };
-        set({
-          draftStart: null,
-          selectedId: wall.id,
-          project: touch({ ...project, walls: [...project.walls, wall] }),
-        });
+        setProject(
+          get,
+          set,
+          { ...project, walls: [...project.walls, wall] },
+          { draftStart: null, selectedId: wall.id },
+        );
       },
       addOpeningAt: (world, type) => {
         const { project } = get();
@@ -211,10 +251,12 @@ export const useEditorStore = create<EditorState>()(
           sillHeight: type === 'window' ? 900 : 0,
           label: type === 'window' ? 'Окно' : 'Дверь',
         };
-        set({
-          selectedId: opening.id,
-          project: touch({ ...project, openings: [...project.openings, opening] }),
-        });
+        setProject(
+          get,
+          set,
+          { ...project, openings: [...project.openings, opening] },
+          { selectedId: opening.id },
+        );
       },
       updateOpening: (id, patch) =>
         set((s) => ({
@@ -233,17 +275,19 @@ export const useEditorStore = create<EditorState>()(
       deleteSelected: () => {
         const { selectedId, project } = get();
         if (!selectedId) return;
-        set({
-          selectedId: null,
-          project: touch({
+        setProject(
+          get,
+          set,
+          {
             ...project,
             walls: project.walls.filter((w) => w.id !== selectedId),
             openings: project.openings.filter(
               (o) => o.id !== selectedId && o.wallId !== selectedId,
             ),
             furniture: project.furniture.filter((f) => f.id !== selectedId),
-          }),
-        });
+          },
+          { selectedId: null },
+        );
       },
       addFurniture: (kind) => {
         const labels: Record<string, string> = {
@@ -268,11 +312,14 @@ export const useEditorStore = create<EditorState>()(
           kind,
           label: labels[kind] ?? kind,
         };
-        set((s) => ({
-          selectedId: item.id,
-          project: touch({ ...s.project, furniture: [...s.project.furniture, item] }),
-        }));
+        setProject(
+          get,
+          set,
+          { ...get().project, furniture: [...get().project.furniture, item] },
+          { selectedId: item.id },
+        );
       },
+      // Continuous drags: history captured via captureHistory() from canvas
       moveFurniture: (id, x, y) =>
         set((s) => ({
           project: touch({
@@ -296,7 +343,6 @@ export const useEditorStore = create<EditorState>()(
               : hit.point;
           const fixed = end === 'a' ? wall.b : wall.a;
           if (wallSegmentCollides(fixed, p, others)) {
-            // Prefer joining to a wall instead of crossing through it
             if (hit.kind !== 'grid' && !wallSegmentCollides(fixed, hit.point, others)) {
               p = hit.point;
             } else {
@@ -308,7 +354,7 @@ export const useEditorStore = create<EditorState>()(
               if (retry.kind !== 'grid' && !wallSegmentCollides(fixed, retry.point, others)) {
                 p = retry.point;
               } else {
-                return s; // block penetration
+                return s;
               }
             }
           }
@@ -316,9 +362,7 @@ export const useEditorStore = create<EditorState>()(
           return {
             project: touch({
               ...s.project,
-              walls: s.project.walls.map((w) =>
-                w.id === id ? { ...w, [end]: p } : w,
-              ),
+              walls: s.project.walls.map((w) => (w.id === id ? { ...w, [end]: p } : w)),
             }),
           };
         }),
@@ -336,7 +380,6 @@ export const useEditorStore = create<EditorState>()(
             : hit.point;
         const fixed = end === 'a' ? wall.b : wall.a;
         if (wallSegmentCollides(fixed, p, others)) {
-          if (hit.kind !== 'grid') return wall[end]; // show stuck at last valid via store; preview keep old
           return wall[end];
         }
         return p;
@@ -397,7 +440,10 @@ export const useEditorStore = create<EditorState>()(
             }),
           };
         }),
-      resetDemo: () => set({ project: demoProject(), selectedId: null, draftStart: null }),
+      resetDemo: () => {
+        pushPast(get, set);
+        set({ project: demoProject(), selectedId: null, draftStart: null, future: [] });
+      },
       copyFloorPlan: (from, to) => {
         const { project } = get();
         const idMap = new Map<string, string>();
@@ -421,20 +467,97 @@ export const useEditorStore = create<EditorState>()(
             (o) => !project.walls.some((w) => w.floor === to && w.id === o.wallId),
           ),
         };
-        set({
-          project: touch({
+        setProject(
+          get,
+          set,
+          {
             ...project,
             walls: [...withoutTarget.walls, ...walls],
             openings: [...withoutTarget.openings, ...openings],
             activeFloor: to,
-          }),
+          },
+          { selectedId: null },
+        );
+      },
+      loadProject: (project) =>
+        set({
+          project: touch(project),
           selectedId: null,
+          draftStart: null,
+          past: [],
+          future: [],
+        }),
+      exportJson: () => JSON.stringify(get().project, null, 2),
+      captureHistory: () => pushPast(get, set),
+      undo: () => {
+        const { past, project, future } = get();
+        if (!past.length) return;
+        const prev = past[past.length - 1];
+        set({
+          past: past.slice(0, -1),
+          future: [cloneProject(project), ...future].slice(0, HISTORY_LIMIT),
+          project: prev,
+          selectedId: null,
+          draftStart: null,
         });
       },
-      loadProject: (project) => set({ project, selectedId: null }),
-      exportJson: () => JSON.stringify(get().project, null, 2),
+      redo: () => {
+        const { past, project, future } = get();
+        if (!future.length) return;
+        const next = future[0];
+        set({
+          future: future.slice(1),
+          past: [...past, cloneProject(project)].slice(-HISTORY_LIMIT),
+          project: next,
+          selectedId: null,
+          draftStart: null,
+        });
+      },
+      canUndo: () => get().past.length > 0,
+      canRedo: () => get().future.length > 0,
     }),
-    { name: 'frameplan-project-v2' },
+    {
+      name: 'frameplan-project-v2',
+      partialize: (s) => ({
+        project: s.project,
+        scale: s.scale,
+        offset: s.offset,
+        tab: s.tab,
+      }),
+      merge: (persisted, current) => {
+        const p = persisted as Partial<EditorState> | undefined;
+        if (!p?.project) return current;
+        // Migrate older projects missing foundationType
+        const settings = {
+          ...DEFAULT_SETTINGS,
+          ...p.project.settings,
+          insulation: {
+            ...DEFAULT_SETTINGS.insulation,
+            ...p.project.settings?.insulation,
+          },
+          climate: {
+            ...DEFAULT_SETTINGS.climate,
+            ...p.project.settings?.climate,
+          },
+          studSectionMm: {
+            ...DEFAULT_SETTINGS.studSectionMm,
+            ...p.project.settings?.studSectionMm,
+          },
+          joistSectionMm: {
+            ...DEFAULT_SETTINGS.joistSectionMm,
+            ...p.project.settings?.joistSectionMm,
+          },
+          foundationType: p.project.settings?.foundationType ?? DEFAULT_SETTINGS.foundationType,
+        };
+        return {
+          ...current,
+          ...p,
+          project: { ...p.project, settings },
+          past: [],
+          future: [],
+        };
+      },
+    },
   ),
 );
 

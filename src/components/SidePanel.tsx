@@ -1,3 +1,4 @@
+import { useMemo, useRef } from 'react';
 import {
   CLIMATE_PRESETS,
   EXTERIOR_CLADDING,
@@ -5,16 +6,28 @@ import {
   INSULATION_OPTIONS,
   INTERIOR_FINISH,
 } from '../domain/materials';
-import type { ExteriorCladding, FloorFinish, InteriorFinish, RoofType } from '../domain/types';
+import type {
+  ExteriorCladding,
+  FloorFinish,
+  FoundationType,
+  InteriorFinish,
+  RoofType,
+} from '../domain/types';
 import { useEditorStore } from '../store/editorStore';
 import { wallLength } from '../domain/geometry';
+import { parseProjectJson } from '../domain/projectIO';
+import { detectRooms } from '../domain/rooms';
+import { validateProject } from '../domain/validate';
 
 export function SidePanel() {
+  const fileRef = useRef<HTMLInputElement>(null);
   const {
     project,
     selectedId,
     tool,
     wallKind,
+    past,
+    future,
     setTool,
     setWallKind,
     setActiveFloor,
@@ -28,10 +41,19 @@ export function SidePanel() {
     resetDemo,
     copyFloorPlan,
     exportJson,
+    loadProject,
+    captureHistory,
+    undo,
+    redo,
   } = useEditorStore();
 
   const selectedOpening = project.openings.find((o) => o.id === selectedId);
   const selectedWall = project.walls.find((w) => w.id === selectedId);
+  const issues = useMemo(() => validateProject(project), [project]);
+  const rooms = useMemo(
+    () => detectRooms(project, project.activeFloor),
+    [project],
+  );
 
   const download = () => {
     const blob = new Blob([exportJson()], { type: 'application/json' });
@@ -43,6 +65,23 @@ export function SidePanel() {
     URL.revokeObjectURL(url);
   };
 
+  const onImportFile = async (file: File | null) => {
+    if (!file) return;
+    try {
+      const text = await file.text();
+      const result = parseProjectJson(text);
+      if (!result.ok) {
+        window.alert(result.error);
+        return;
+      }
+      loadProject(result.project);
+    } catch {
+      window.alert('Не удалось прочитать файл.');
+    }
+  };
+
+  const withHistory = () => captureHistory();
+
   return (
     <aside className="side-panel">
       <div className="brand-block">
@@ -52,13 +91,29 @@ export function SidePanel() {
 
       <label className="field">
         <span>Проект</span>
-        <input value={project.name} onChange={(e) => setProjectName(e.target.value)} />
+        <input
+          value={project.name}
+          onFocus={withHistory}
+          onChange={(e) => setProjectName(e.target.value)}
+        />
       </label>
+
+      <section className="panel-section">
+        <h3>История</h3>
+        <div className="seg">
+          <button type="button" disabled={!past.length} onClick={() => undo()}>
+            Отменить
+          </button>
+          <button type="button" disabled={!future.length} onClick={() => redo()}>
+            Повторить
+          </button>
+        </div>
+      </section>
 
       <section className="panel-section">
         <h3>Инструменты</h3>
         <p className="muted" style={{ marginBottom: 8 }}>
-          Панель также на чертеже сверху. Горячие клавиши: V выбор, W стена, O окно, D дверь.
+          Панель также на чертеже сверху. V выбор, W стена, O окно, D дверь, M рулетка.
         </p>
         <div className="tool-grid">
           {(
@@ -67,6 +122,7 @@ export function SidePanel() {
               ['wall', 'Стена'],
               ['window', 'Окно'],
               ['door', 'Дверь'],
+              ['measure', 'Рулетка'],
               ['delete', 'Удалить'],
             ] as const
           ).map(([id, label]) => (
@@ -100,20 +156,52 @@ export function SidePanel() {
         )}
       </section>
 
+      {issues.length > 0 && (
+        <section className="panel-section highlight">
+          <h3>Проверки планировки</h3>
+          <ul className="issue-list">
+            {issues.map((issue, i) => (
+              <li key={i} className={issue.level === 'error' ? 'issue-error' : 'issue-warn'}>
+                {issue.message}
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
+
+      {rooms.length > 0 && (
+        <section className="panel-section">
+          <h3>Помещения ({project.activeFloor + 1} эт.)</h3>
+          <ul className="room-list">
+            {rooms.map((r) => (
+              <li key={r.id}>
+                {r.label}: <strong>{r.areaM2.toFixed(1)} м²</strong>
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
+
       <section className="panel-section">
         <h3>Этажи</h3>
         <div className="seg">
           <button
             type="button"
             className={project.settings.floors === 1 ? 'active' : ''}
-            onClick={() => updateSettings({ floors: 1 })}
+            onClick={() => {
+              withHistory();
+              updateSettings({ floors: 1 });
+            }}
           >
             1 этаж
           </button>
           <button
             type="button"
             className={project.settings.floors === 2 ? 'active' : ''}
-            onClick={() => updateSettings({ floors: 2 })}
+            onClick={() => {
+              withHistory();
+              updateSettings({ floors: 2 });
+            }}
           >
             2 этажа
           </button>
@@ -153,6 +241,7 @@ export function SidePanel() {
           <span>Тип кровли</span>
           <select
             value={project.settings.roofType}
+            onFocus={withHistory}
             onChange={(e) => updateSettings({ roofType: e.target.value as RoofType })}
           >
             <option value="gable">Двускатная</option>
@@ -168,15 +257,41 @@ export function SidePanel() {
             min={0}
             max={60}
             value={project.settings.roofPitchDeg}
+            onFocus={withHistory}
             onChange={(e) => updateSettings({ roofPitchDeg: Number(e.target.value) })}
+          />
+        </label>
+        <label className="field">
+          <span>Свес кровли, мм</span>
+          <input
+            type="number"
+            min={0}
+            step={50}
+            value={project.settings.overhangMm}
+            onFocus={withHistory}
+            onChange={(e) => updateSettings({ overhangMm: Number(e.target.value) })}
           />
         </label>
         <label className="field">
           <span>Шаг стоек, мм</span>
           <select
             value={project.settings.studSpacingMm}
+            onFocus={withHistory}
             onChange={(e) =>
               updateSettings({ studSpacingMm: Number(e.target.value) as 400 | 600 })
+            }
+          >
+            <option value={400}>400</option>
+            <option value={600}>600</option>
+          </select>
+        </label>
+        <label className="field">
+          <span>Шаг балок/стропил, мм</span>
+          <select
+            value={project.settings.joistSpacingMm}
+            onFocus={withHistory}
+            onChange={(e) =>
+              updateSettings({ joistSpacingMm: Number(e.target.value) as 400 | 600 })
             }
           >
             <option value={400}>400</option>
@@ -189,8 +304,23 @@ export function SidePanel() {
             type="number"
             step={50}
             value={project.settings.floorHeightMm}
+            onFocus={withHistory}
             onChange={(e) => updateSettings({ floorHeightMm: Number(e.target.value) })}
           />
+        </label>
+        <label className="field">
+          <span>Фундамент</span>
+          <select
+            value={project.settings.foundationType}
+            onFocus={withHistory}
+            onChange={(e) =>
+              updateSettings({ foundationType: e.target.value as FoundationType })
+            }
+          >
+            <option value="pile">Свайный</option>
+            <option value="strip">Ленточный</option>
+            <option value="slab">Плита</option>
+          </select>
         </label>
       </section>
 
@@ -200,6 +330,7 @@ export function SidePanel() {
           <span>Наружная обшивка</span>
           <select
             value={project.settings.exteriorCladding}
+            onFocus={withHistory}
             onChange={(e) =>
               updateSettings({ exteriorCladding: e.target.value as ExteriorCladding })
             }
@@ -215,6 +346,7 @@ export function SidePanel() {
           <span>Внутренние стены</span>
           <select
             value={project.settings.interiorFinish}
+            onFocus={withHistory}
             onChange={(e) =>
               updateSettings({ interiorFinish: e.target.value as InteriorFinish })
             }
@@ -230,6 +362,7 @@ export function SidePanel() {
           <span>Пол</span>
           <select
             value={project.settings.floorFinish}
+            onFocus={withHistory}
             onChange={(e) => updateSettings({ floorFinish: e.target.value as FloorFinish })}
           >
             {Object.values(FLOOR_FINISH).map((m) => (
@@ -246,6 +379,7 @@ export function SidePanel() {
         <label className="field">
           <span>Тип (λ)</span>
           <select
+            onFocus={withHistory}
             onChange={(e) => {
               const opt = INSULATION_OPTIONS.find((x) => x.id === e.target.value);
               if (!opt) return;
@@ -271,6 +405,7 @@ export function SidePanel() {
             type="number"
             step={10}
             value={project.settings.insulation.wallThicknessMm}
+            onFocus={withHistory}
             onChange={(e) => updateInsulation({ wallThicknessMm: Number(e.target.value) })}
           />
         </label>
@@ -280,6 +415,7 @@ export function SidePanel() {
             type="number"
             step={10}
             value={project.settings.insulation.floorThicknessMm}
+            onFocus={withHistory}
             onChange={(e) => updateInsulation({ floorThicknessMm: Number(e.target.value) })}
           />
         </label>
@@ -289,6 +425,7 @@ export function SidePanel() {
             type="number"
             step={10}
             value={project.settings.insulation.ceilingThicknessMm}
+            onFocus={withHistory}
             onChange={(e) => updateInsulation({ ceilingThicknessMm: Number(e.target.value) })}
           />
         </label>
@@ -300,6 +437,7 @@ export function SidePanel() {
           <span>Регион</span>
           <select
             value={project.settings.climate.regionName}
+            onFocus={withHistory}
             onChange={(e) => {
               const p = CLIMATE_PRESETS.find((x) => x.regionName === e.target.value);
               if (p) updateClimate({ regionName: p.regionName, designOutdoorC: p.designOutdoorC });
@@ -317,6 +455,7 @@ export function SidePanel() {
           <input
             type="number"
             value={project.settings.climate.designIndoorC}
+            onFocus={withHistory}
             onChange={(e) => updateClimate({ designIndoorC: Number(e.target.value) })}
           />
         </label>
@@ -326,6 +465,7 @@ export function SidePanel() {
             type="number"
             step={0.1}
             value={project.settings.climate.airExchangeRate}
+            onFocus={withHistory}
             onChange={(e) => updateClimate({ airExchangeRate: Number(e.target.value) })}
           />
         </label>
@@ -355,6 +495,7 @@ export function SidePanel() {
             <input
               type="number"
               value={selectedOpening.width}
+              onFocus={withHistory}
               onChange={(e) => updateOpening(selectedOpening.id, { width: Number(e.target.value) })}
             />
           </label>
@@ -363,6 +504,7 @@ export function SidePanel() {
             <input
               type="number"
               value={selectedOpening.height}
+              onFocus={withHistory}
               onChange={(e) =>
                 updateOpening(selectedOpening.id, { height: Number(e.target.value) })
               }
@@ -374,6 +516,7 @@ export function SidePanel() {
               <input
                 type="number"
                 value={selectedOpening.sillHeight}
+                onFocus={withHistory}
                 onChange={(e) =>
                   updateOpening(selectedOpening.id, { sillHeight: Number(e.target.value) })
                 }
@@ -385,6 +528,7 @@ export function SidePanel() {
             <input
               type="number"
               value={selectedOpening.offset}
+              onFocus={withHistory}
               onChange={(e) =>
                 updateOpening(selectedOpening.id, { offset: Number(e.target.value) })
               }
@@ -405,6 +549,7 @@ export function SidePanel() {
             <input
               type="number"
               value={selectedWall.thickness}
+              onFocus={withHistory}
               onChange={(e) => updateWall(selectedWall.id, { thickness: Number(e.target.value) })}
             />
           </label>
@@ -412,6 +557,7 @@ export function SidePanel() {
             <span>Тип</span>
             <select
               value={selectedWall.kind}
+              onFocus={withHistory}
               onChange={(e) =>
                 updateWall(selectedWall.id, {
                   kind: e.target.value as 'exterior' | 'interior',
@@ -429,6 +575,19 @@ export function SidePanel() {
         <button type="button" className="tool" onClick={download}>
           Экспорт JSON
         </button>
+        <button type="button" className="tool" onClick={() => fileRef.current?.click()}>
+          Открыть JSON
+        </button>
+        <input
+          ref={fileRef}
+          type="file"
+          accept=".json,application/json"
+          hidden
+          onChange={(e) => {
+            void onImportFile(e.target.files?.[0] ?? null);
+            e.target.value = '';
+          }}
+        />
         <button type="button" className="tool ghost" onClick={resetDemo}>
           Демо 6×8
         </button>

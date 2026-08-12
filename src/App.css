@@ -342,9 +342,48 @@ select {
 
 .summary-bar {
   display: grid;
-  grid-template-columns: repeat(6, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
   gap: 10px;
   margin-bottom: 14px;
+}
+
+.summary-actions {
+  display: flex !important;
+  flex-direction: row;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  grid-column: 1 / -1;
+}
+
+.report-issues {
+  display: grid;
+  gap: 6px;
+  margin-bottom: 12px;
+}
+
+.issue-list,
+.room-list {
+  margin: 0;
+  padding-left: 18px;
+  display: grid;
+  gap: 4px;
+  font-size: 0.86rem;
+}
+
+.issue-error {
+  color: #9f1239;
+}
+
+.issue-warn {
+  color: #b45309;
+}
+
+.room-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 12px;
 }
 
 .summary-bar > div {

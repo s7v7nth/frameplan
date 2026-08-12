@@ -8,15 +8,19 @@ import {
   projectPointOnSegment,
   magnetSnapPoint,
   WALL_MAGNET_MM,
+  dist,
+  formatMm,
 } from '../domain/geometry';
+import { detectRooms } from '../domain/rooms';
 import { useEditorStore } from '../store/editorStore';
-import type { Tool } from '../domain/types';
+import type { Point, Tool } from '../domain/types';
 
 const TOOLS: { id: Tool; label: string; hint: string }[] = [
   { id: 'select', label: 'Выбор', hint: 'ЛКМ по пустому — панорама' },
   { id: 'wall', label: 'Стена', hint: 'Два клика · магнитится к стенам' },
   { id: 'window', label: 'Окно', hint: 'Клик по стене' },
   { id: 'door', label: 'Дверь', hint: 'Клик по стене' },
+  { id: 'measure', label: 'Рулетка', hint: 'Два клика — длина' },
   { id: 'delete', label: 'Удалить', hint: 'Клик по объекту' },
 ];
 
@@ -35,6 +39,8 @@ export function PlanCanvas() {
   const [panning, setPanning] = useState(false);
   const [hover, setHover] = useState<{ x: number; y: number } | null>(null);
   const [magnetAt, setMagnetAt] = useState<{ x: number; y: number } | null>(null);
+  const [measureStart, setMeasureStart] = useState<Point | null>(null);
+  const [measureEnd, setMeasureEnd] = useState<Point | null>(null);
 
   const {
     project,
@@ -57,6 +63,7 @@ export function PlanCanvas() {
     previewEndpointSnap,
     setOffset,
     setScale,
+    captureHistory,
   } = useEditorStore();
 
   useEffect(() => {
@@ -72,20 +79,27 @@ export function PlanCanvas() {
 
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
+      const tag = (e.target as HTMLElement)?.tagName;
+      const typing = tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT';
+
       if (e.code === 'Space') {
         e.preventDefault();
         setSpacePan(true);
       }
+      if (typing) return;
       if (e.key === 'v' || e.key === 'V') setTool('select');
       if (e.key === 'w' || e.key === 'W') setTool('wall');
       if (e.key === 'o' || e.key === 'O') setTool('window');
       if (e.key === 'd' || e.key === 'D') setTool('door');
+      if (e.key === 'm' || e.key === 'M') setTool('measure');
       if (e.key === 'Delete' || e.key === 'Backspace') {
-        const tag = (e.target as HTMLElement)?.tagName;
-        if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
         deleteSelected();
       }
-      if (e.key === 'Escape') useEditorStore.getState().cancelDraft();
+      if (e.key === 'Escape') {
+        useEditorStore.getState().cancelDraft();
+        setMeasureStart(null);
+        setMeasureEnd(null);
+      }
     };
     const onKeyUp = (e: KeyboardEvent) => {
       if (e.code === 'Space') setSpacePan(false);
@@ -97,6 +111,13 @@ export function PlanCanvas() {
       window.removeEventListener('keyup', onKeyUp);
     };
   }, [deleteSelected, setTool]);
+
+  useEffect(() => {
+    if (tool !== 'measure') {
+      setMeasureStart(null);
+      setMeasureEnd(null);
+    }
+  }, [tool]);
 
   const toWorld = useCallback(
     (sx: number, sy: number) => ({
@@ -114,6 +135,15 @@ export function PlanCanvas() {
     () => project.furniture.filter((f) => f.floor === project.activeFloor),
     [project.furniture, project.activeFloor],
   );
+  const rooms = useMemo(
+    () => detectRooms(project, project.activeFloor),
+    [project],
+  );
+
+  const snapMeasurePoint = (world: Point): Point => {
+    const hit = magnetSnapPoint(world, walls, { freeWhenFar: true });
+    return hit.kind === 'grid' ? { x: Math.round(world.x), y: Math.round(world.y) } : hit.point;
+  };
 
   const startPan = (clientX: number, clientY: number) => {
     panRef.current = {
@@ -128,7 +158,6 @@ export function PlanCanvas() {
 
   const onStageMouseDown = (e: KonvaEventObject<MouseEvent>) => {
     const evt = e.evt;
-    // RMB / MMB — always pan, never browser menu
     if (evt.button === 1 || evt.button === 2 || spacePan) {
       evt.preventDefault();
       startPan(evt.clientX, evt.clientY);
@@ -140,18 +169,30 @@ export function PlanCanvas() {
     if (!stage) return;
     const isEmpty = e.target === stage;
 
-    // Select tool + empty canvas → pan (natural planner navigation)
     if (tool === 'select' && isEmpty) {
       startPan(evt.clientX, evt.clientY);
       select(null);
       return;
     }
 
-    if (!isEmpty) return;
+    if (!isEmpty && tool !== 'measure') return;
 
     const pos = stage.getPointerPosition();
     if (!pos) return;
     const world = toWorld(pos.x, pos.y);
+
+    if (tool === 'measure') {
+      const p = snapMeasurePoint(world);
+      if (!measureStart || measureEnd) {
+        setMeasureStart(p);
+        setMeasureEnd(null);
+      } else {
+        setMeasureEnd(p);
+      }
+      return;
+    }
+
+    if (!isEmpty) return;
 
     if (tool === 'wall') {
       if (!draftStart) beginWall(world);
@@ -192,6 +233,12 @@ export function PlanCanvas() {
   }, [setOffset]);
 
   const activeHint = TOOLS.find((t) => t.id === tool)?.hint ?? '';
+  const measurePreviewEnd =
+    tool === 'measure' && measureStart && !measureEnd && hover
+      ? snapMeasurePoint(hover)
+      : measureEnd;
+  const measureLen =
+    measureStart && measurePreviewEnd ? dist(measureStart, measurePreviewEnd) : 0;
 
   return (
     <div
@@ -223,7 +270,7 @@ export function PlanCanvas() {
           const pos = stage?.getPointerPosition();
           if (!pos) return;
           const world = toWorld(pos.x, pos.y);
-          if (tool === 'wall') {
+          if (tool === 'wall' || tool === 'measure') {
             const hit = magnetSnapPoint(world, walls, { freeWhenFar: true });
             setHover(hit.kind === 'grid' ? world : hit.point);
             setMagnetAt(hit.kind === 'grid' ? null : hit.point);
@@ -248,7 +295,7 @@ export function PlanCanvas() {
         style={{
           cursor: panning || spacePan
             ? 'grabbing'
-            : tool === 'wall' || tool === 'window' || tool === 'door'
+            : tool === 'wall' || tool === 'window' || tool === 'door' || tool === 'measure'
               ? 'crosshair'
               : 'default',
         }}
@@ -264,6 +311,26 @@ export function PlanCanvas() {
             );
           })}
 
+          {rooms.map((room) => (
+            <Group key={room.id} listening={false}>
+              <Line
+                points={room.polygon.flatMap((p) => [p.x, p.y])}
+                closed
+                fill="rgba(47, 93, 80, 0.06)"
+                stroke="rgba(47, 93, 80, 0.25)"
+                strokeWidth={20}
+              />
+              <Text
+                x={room.centroid.x - 200}
+                y={room.centroid.y - 80}
+                text={`${room.label}\n${room.areaM2.toFixed(1)} м²`}
+                fontSize={160}
+                fill="#2f5d50"
+                opacity={0.85}
+              />
+            </Group>
+          ))}
+
           {walls.map((wall) => {
             const selected = selectedId === wall.id;
             return (
@@ -276,6 +343,7 @@ export function PlanCanvas() {
                   hitStrokeWidth={300}
                   draggable={tool === 'select' && !spacePan && !panning}
                   onDragStart={(e) => {
+                    captureHistory();
                     wallDragRef.current = { id: wall.id, x: e.target.x(), y: e.target.y() };
                     select(wall.id);
                   }}
@@ -288,6 +356,19 @@ export function PlanCanvas() {
                   onMouseDown={(e) => {
                     if (e.evt.button === 1 || e.evt.button === 2 || spacePan) return;
                     e.cancelBubble = true;
+                    if (tool === 'measure') {
+                      const stage = e.target.getStage();
+                      const pos = stage?.getPointerPosition();
+                      if (!pos) return;
+                      const p = snapMeasurePoint(toWorld(pos.x, pos.y));
+                      if (!measureStart || measureEnd) {
+                        setMeasureStart(p);
+                        setMeasureEnd(null);
+                      } else {
+                        setMeasureEnd(p);
+                      }
+                      return;
+                    }
                     if (tool === 'window' || tool === 'door') {
                       const stage = e.target.getStage();
                       const pos = stage?.getPointerPosition();
@@ -338,6 +419,7 @@ export function PlanCanvas() {
                         onMouseDown={(e) => {
                           e.cancelBubble = true;
                         }}
+                        onDragStart={() => captureHistory()}
                         onDragMove={(e) => {
                           e.cancelBubble = true;
                           const raw = { x: e.target.x(), y: e.target.y() };
@@ -413,6 +495,7 @@ export function PlanCanvas() {
                         onMouseDown={(e) => {
                           e.cancelBubble = true;
                         }}
+                        onDragStart={() => captureHistory()}
                         onDragMove={(e) => {
                           e.cancelBubble = true;
                           const hit = projectPointOnSegment(
@@ -445,6 +528,7 @@ export function PlanCanvas() {
                             onMouseDown={(e) => {
                               e.cancelBubble = true;
                             }}
+                            onDragStart={() => captureHistory()}
                             onDragMove={(e) => {
                               e.cancelBubble = true;
                               const hit = projectPointOnSegment(
@@ -481,6 +565,7 @@ export function PlanCanvas() {
               x={f.x}
               y={f.y}
               draggable={tool === 'select' && !spacePan && !panning}
+              onDragStart={() => captureHistory()}
               onDragEnd={(e) => moveFurniture(f.id, e.target.x(), e.target.y())}
               onMouseDown={(e) => {
                 if (e.evt.button !== 0) return;
@@ -527,12 +612,42 @@ export function PlanCanvas() {
           {draftStart && tool === 'wall' && (
             <Circle x={draftStart.x} y={draftStart.y} radius={80} fill="#c45c26" listening={false} />
           )}
+
+          {measureStart && measurePreviewEnd && tool === 'measure' && (
+            <Group listening={false}>
+              <Line
+                points={[
+                  measureStart.x,
+                  measureStart.y,
+                  measurePreviewEnd.x,
+                  measurePreviewEnd.y,
+                ]}
+                stroke="#0f766e"
+                strokeWidth={40}
+                dash={[120, 80]}
+              />
+              <Circle x={measureStart.x} y={measureStart.y} radius={70} fill="#0f766e" />
+              <Circle
+                x={measurePreviewEnd.x}
+                y={measurePreviewEnd.y}
+                radius={70}
+                fill="#0f766e"
+              />
+              <Text
+                x={(measureStart.x + measurePreviewEnd.x) / 2 - 120}
+                y={(measureStart.y + measurePreviewEnd.y) / 2 - 220}
+                text={formatMm(measureLen)}
+                fontSize={180}
+                fill="#0f766e"
+              />
+            </Group>
+          )}
         </Layer>
       </Stage>
 
       <div className="canvas-hint">
-        ЛКМ по пустому — панорама · Колесо — масштаб · ПКМ/СКМ — панорама · Концы стен: магнит +
-        без пересечений · V/W/O/D — инструменты
+        ЛКМ по пустому — панорама · Колесо — масштаб · ПКМ/СКМ — панорама · V/W/O/D/M —
+        инструменты · Ctrl+Z / Ctrl+Shift+Z — отмена/повтор
       </div>
     </div>
   );

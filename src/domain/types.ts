@@ -9,6 +9,7 @@ export type Tool =
 export type WallKind = 'exterior' | 'interior';
 export type FloorLevel = 0 | 1;
 export type RoofType = 'gable' | 'hip' | 'shed' | 'flat';
+export type FoundationType = 'pile' | 'strip' | 'slab';
 
 export type ExteriorCladding =
   | 'vinyl_siding'
@@ -95,6 +96,7 @@ export interface ProjectSettings {
   roofType: RoofType;
   roofPitchDeg: number;
   overhangMm: number;
+  foundationType: FoundationType;
   exteriorCladding: ExteriorCladding;
   interiorFinish: InteriorFinish;
   floorFinish: FloorFinish;
@@ -105,6 +107,15 @@ export interface ProjectSettings {
   sheetPriceRubPerM2: number;
   insulationPriceRubPerM3: number;
   fastenerPriceRubPerKg: number;
+}
+
+export interface RoomInfo {
+  id: string;
+  floor: FloorLevel;
+  label: string;
+  areaM2: number;
+  centroid: { x: number; y: number };
+  polygon: { x: number; y: number }[];
 }
 
 export interface Project {
@@ -234,6 +245,7 @@ export interface FrameModel {
     roofSvg: string;
     wallElevations: { wallId: string; title: string; svg: string }[];
   };
+  rooms: RoomInfo[];
   summary: {
     footprintM2: number;
     heatedAreaM2: number;

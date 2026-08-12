@@ -6,6 +6,7 @@ import {
   PREFERRED_STOCK_MM,
   STOCK_LENGTHS_MM,
 } from '../domain/materials';
+import { detectAllRooms } from '../domain/rooms';
 import type {
   BomLine,
   CuttingBoard,
@@ -341,6 +342,62 @@ function buildBom(
     note: 'Шаг не более 2,4 м по СП 31-105',
   });
 
+  const perimeterM =
+    project.walls
+      .filter((w) => w.floor === 0 && w.kind === 'exterior')
+      .reduce((s, w) => s + wallLength(w), 0) / 1000;
+  const foundation = project.settings.foundationType ?? 'pile';
+  if (foundation === 'pile') {
+    const piles = Math.max(4, Math.ceil(perimeterM / 2.5) + 4);
+    push({
+      group: 'Фундамент',
+      name: 'Сваи винтовые/жб (укрупнённо)',
+      unit: 'шт',
+      qty: piles,
+      unitPrice: 6500,
+      note: 'Шаг ~2,5 м по периметру + углы',
+    });
+    push({
+      group: 'Фундамент',
+      name: 'Оголовок сваи + крепёж',
+      unit: 'шт',
+      qty: piles,
+      unitPrice: 900,
+    });
+  } else if (foundation === 'strip') {
+    push({
+      group: 'Фундамент',
+      name: 'Лента ж/б (укрупнённо, объём)',
+      unit: 'м³',
+      qty: Number((perimeterM * 0.4 * 0.6).toFixed(2)),
+      unitPrice: 12000,
+      note: 'Сечение ориентир. 400×600 мм',
+    });
+    push({
+      group: 'Фундамент',
+      name: 'Арматура ленты',
+      unit: 'кг',
+      qty: Number((perimeterM * 18).toFixed(0)),
+      unitPrice: 75,
+    });
+  } else {
+    push({
+      group: 'Фундамент',
+      name: 'Плита ж/б (укрупнённо)',
+      unit: 'м³',
+      qty: Number((area0 * 0.25).toFixed(2)),
+      unitPrice: 11000,
+      note: 'Толщина ориентир. 250 мм',
+    });
+    push({
+      group: 'Фундамент',
+      name: 'Арматурная сетка плиты',
+      unit: 'м²',
+      qty: Number((area0 * 2).toFixed(1)),
+      unitPrice: 450,
+    });
+  }
+
   return lines;
 }
 
@@ -484,6 +541,14 @@ export function generateFrameModel(project: Project): FrameModel {
   const bom = buildBom(project, lumber, sheets, cutting);
   const heatLoss = computeHeatLoss(project);
   const projections = renderFrameProjections(project, members);
+  const rooms = detectAllRooms(project).map((r) => ({
+    id: r.id,
+    floor: r.floor,
+    label: r.label,
+    areaM2: r.areaM2,
+    centroid: r.centroid,
+    polygon: r.polygon,
+  }));
 
   const footprint = polygonAreaFromExterior(
     project.walls.filter((w) => w.floor === 0 && w.kind === 'exterior'),
@@ -509,6 +574,7 @@ export function generateFrameModel(project: Project): FrameModel {
     bom,
     heatLoss,
     projections,
+    rooms,
     summary: {
       footprintM2: footprint,
       heatedAreaM2: footprint * project.settings.floors,
