@@ -6,7 +6,6 @@ import {
   resolveDraftSnap,
   GRID_MM,
   gridStepForScale,
-  applyButtJoins,
   finalizeWallJoins,
   wallLength,
 } from '../src/domain/geometry';
