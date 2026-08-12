@@ -8,6 +8,9 @@ import {
   projectPointOnSegment,
   magnetSnapPoint,
   WALL_MAGNET_MM,
+  orthoSnapFrom,
+  snapPoint,
+  wallRenderEndpoints,
 } from '../domain/geometry';
 import { useEditorStore } from '../store/editorStore';
 import type { Tool } from '../domain/types';
@@ -155,7 +158,11 @@ export function PlanCanvas() {
 
     if (tool === 'wall') {
       if (!draftStart) beginWall(world);
-      else finishWall(world);
+      else {
+        const hit = magnetSnapPoint(world, walls, { freeWhenFar: true, from: draftStart });
+        const end = hit.kind === 'grid' ? snapPoint(orthoSnapFrom(draftStart, world)) : hit.point;
+        finishWall(end);
+      }
       return;
     }
     if (tool === 'window') {
@@ -224,8 +231,17 @@ export function PlanCanvas() {
           if (!pos) return;
           const world = toWorld(pos.x, pos.y);
           if (tool === 'wall') {
-            const hit = magnetSnapPoint(world, walls, { freeWhenFar: true });
-            setHover(hit.kind === 'grid' ? world : hit.point);
+            const hit = magnetSnapPoint(world, walls, {
+              freeWhenFar: true,
+              from: draftStart ?? undefined,
+            });
+            const pt =
+              hit.kind === 'grid'
+                ? draftStart
+                  ? snapPoint(orthoSnapFrom(draftStart, world))
+                  : world
+                : hit.point;
+            setHover(pt);
             setMagnetAt(hit.kind === 'grid' ? null : hit.point);
           } else {
             setHover(world);
@@ -266,13 +282,15 @@ export function PlanCanvas() {
 
           {walls.map((wall) => {
             const selected = selectedId === wall.id;
+            const draw = wallRenderEndpoints(wall, walls);
             return (
               <Group key={wall.id}>
                 <Line
-                  points={[wall.a.x, wall.a.y, wall.b.x, wall.b.y]}
+                  points={[draw.a.x, draw.a.y, draw.b.x, draw.b.y]}
                   stroke={selected ? '#c45c26' : wall.kind === 'exterior' ? '#1f3a2e' : '#64748b'}
                   strokeWidth={selected ? 220 : wall.thickness}
-                  lineCap="square"
+                  lineCap="butt"
+                  lineJoin="miter"
                   hitStrokeWidth={300}
                   draggable={tool === 'select' && !spacePan && !panning}
                   onDragStart={(e) => {
@@ -300,7 +318,17 @@ export function PlanCanvas() {
                       if (!pos) return;
                       const world = toWorld(pos.x, pos.y);
                       if (!draftStart) beginWall(world);
-                      else finishWall(world);
+                      else {
+                        const hit = magnetSnapPoint(world, walls, {
+                          freeWhenFar: true,
+                          from: draftStart,
+                        });
+                        const end =
+                          hit.kind === 'grid'
+                            ? snapPoint(orthoSnapFrom(draftStart, world))
+                            : hit.point;
+                        finishWall(end);
+                      }
                       return;
                     }
                     select(wall.id);
@@ -308,9 +336,10 @@ export function PlanCanvas() {
                   }}
                 />
                 <Line
-                  points={[wall.a.x, wall.a.y, wall.b.x, wall.b.y]}
+                  points={[draw.a.x, draw.a.y, draw.b.x, draw.b.y]}
                   stroke="#f4f7f2"
                   strokeWidth={Math.max(40, wall.thickness - 80)}
+                  lineCap="butt"
                   listening={false}
                 />
                 <Text

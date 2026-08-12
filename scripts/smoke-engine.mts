@@ -1,5 +1,5 @@
 import { DEFAULT_SETTINGS } from '../src/domain/materials';
-import { magnetSnapPoint } from '../src/domain/geometry';
+import { magnetSnapPoint, weldWallEndpoints, wallRenderEndpoints } from '../src/domain/geometry';
 import { generateFrameModel } from '../src/engine/frameEngine';
 import { headerHeightMm } from '../src/engine/frameGeometry';
 import type { Project } from '../src/domain/types';
@@ -249,6 +249,9 @@ const midApproach = { x: 3000, y: 80 };
 const midHit = magnetSnapPoint(midApproach, existing, { freeWhenFar: true });
 const farCorner = { x: 180, y: 200 };
 const farHit = magnetSnapPoint(farCorner, existing, { freeWhenFar: true });
+// Click ~450mm along wall — must still promote to tip, not nest into body
+const inset = { x: 450, y: 80 };
+const insetHit = magnetSnapPoint(inset, existing, { freeWhenFar: true });
 
 const magnetReport = {
   cornerKind: cornerHit.kind,
@@ -257,6 +260,8 @@ const magnetReport = {
   midAt: midHit.point,
   farKind: farHit.kind,
   farAt: farHit.point,
+  insetKind: insetHit.kind,
+  insetAt: insetHit.point,
 };
 
 console.log('magnet', JSON.stringify(magnetReport, null, 2));
@@ -268,9 +273,77 @@ if (
   Math.abs(midHit.point.x - 3000) > 1 ||
   Math.abs(midHit.point.y - 0) > 1 ||
   farHit.kind !== 'endpoint' ||
-  Math.hypot(farHit.point.x - 0, farHit.point.y - 0) > 1
+  Math.hypot(farHit.point.x - 0, farHit.point.y - 0) > 1 ||
+  insetHit.kind !== 'endpoint' ||
+  Math.hypot(insetHit.point.x - 0, insetHit.point.y - 0) > 1
 ) {
   console.error('Magnet smoke failed', magnetReport);
+  process.exit(1);
+}
+
+// Weld nearby mismatched tips
+const mismatched = [
+  {
+    id: 'c1',
+    a: { x: 0, y: 0 },
+    b: { x: 4000, y: 0 },
+    thickness: 200,
+    kind: 'exterior' as const,
+    height: 2700,
+    floor: 0 as const,
+  },
+  {
+    id: 'c2',
+    a: { x: 80, y: 0 }, // 80mm off tip — must weld to (0,0)
+    b: { x: 0, y: 4000 },
+    thickness: 200,
+    kind: 'exterior' as const,
+    height: 2700,
+    floor: 0 as const,
+  },
+];
+const welded = weldWallEndpoints(mismatched, 0);
+const tipJoined =
+  welded[0].a.x === welded[1].a.x &&
+  welded[0].a.y === welded[1].a.y;
+if (!tipJoined) {
+  console.error('Weld failed', welded.map((w) => ({ a: w.a, b: w.b })));
+  process.exit(1);
+}
+console.log('weld', { tip: welded[0].a, tipJoined });
+
+// Render inset: shared corner must shorten draw so strokes don't cross
+const renderWalls = [
+  {
+    id: 'r1',
+    a: { x: 0, y: 0 },
+    b: { x: 4000, y: 0 },
+    thickness: 200,
+    kind: 'exterior' as const,
+    height: 2700,
+    floor: 0 as const,
+  },
+  {
+    id: 'r2',
+    a: { x: 0, y: 0 },
+    b: { x: 0, y: 4000 },
+    thickness: 200,
+    kind: 'exterior' as const,
+    height: 2700,
+    floor: 0 as const,
+  },
+];
+const r1 = wallRenderEndpoints(renderWalls[0], renderWalls);
+const r2 = wallRenderEndpoints(renderWalls[1], renderWalls);
+const renderReport = {
+  r1a: r1.a,
+  r2a: r2.a,
+  hInsetOk: Math.abs(r1.a.x - 100) < 1 && Math.abs(r1.a.y) < 1,
+  vInsetOk: Math.abs(r2.a.x) < 1 && Math.abs(r2.a.y - 100) < 1,
+};
+console.log('renderInset', renderReport);
+if (!renderReport.hInsetOk || !renderReport.vInsetOk) {
+  console.error('Render inset failed', renderReport);
   process.exit(1);
 }
 

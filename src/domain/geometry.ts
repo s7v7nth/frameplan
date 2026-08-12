@@ -29,18 +29,21 @@ export function snapPoint(p: Point, grid = 100): Point {
   };
 }
 
-/** Default magnet radius in mm — endpoint snaps when within this distance. */
-export const WALL_MAGNET_MM = 250;
-
+/** Endpoint magnet — large so corners tip-to-tip even when clicking thick stroke. */
+export const WALL_MAGNET_MM = 520;
+/** Mid-span T-junction magnet (perpendicular to centerline). */
+export const SEGMENT_MAGNET_MM = 160;
 /**
- * How much closer a segment hit must be than an endpoint to beat it.
- * Without this bias, approaching a corner perpendicularly snaps "into" the
- * wall body (segment projection) instead of butt-joining tip-to-tip.
+ * Prefer endpoint over segment unless segment is this much closer.
+ * Large bias: corners must win over "into the wall" projections.
  */
-export const ENDPOINT_BIAS_MM = 220;
-
-/** Along-wall distance from a segment hit to an end → promote to that endpoint. */
-export const END_PROMOTE_MM = 300;
+export const ENDPOINT_BIAS_MM = 480;
+/** Along-wall distance from tip: segment hits here become endpoint snaps. */
+export const END_PROMOTE_MM = 750;
+/** After place/move: merge tips within this distance to one shared point. */
+export const ENDPOINT_WELD_MM = 150;
+/** Soft axis lock while drafting a wall from draftStart. */
+export const ORTHO_SNAP_MM = 140;
 
 export type MagnetHit = {
   point: Point;
@@ -50,13 +53,25 @@ export type MagnetHit = {
 };
 
 /**
+ * Soft ortho: if nearly horizontal/vertical from `from`, lock that axis.
+ */
+export function orthoSnapFrom(from: Point, to: Point, thresholdMm = ORTHO_SNAP_MM): Point {
+  const dx = to.x - from.x;
+  const dy = to.y - from.y;
+  if (Math.abs(dx) <= thresholdMm && Math.abs(dy) > thresholdMm) {
+    return { x: from.x, y: to.y };
+  }
+  if (Math.abs(dy) <= thresholdMm && Math.abs(dx) > thresholdMm) {
+    return { x: to.x, y: from.y };
+  }
+  return { x: to.x, y: to.y };
+}
+
+/**
  * Magnetic snap for wall endpoints (centerline model):
  * 1) other wall endpoints — preferred for corners (butt / tip-to-tip)
- * 2) projection onto other wall segments — mid-span T-junctions only
- * 3) grid (weakest)
- *
- * Near-end segment projections are promoted to endpoints so corners join
- * tip-to-tip and California-corner nodes can detect shared points.
+ * 2) projection onto segments — only mid-span T-junctions
+ * 3) grid / free
  */
 export function magnetSnapPoint(
   p: Point,
@@ -64,58 +79,75 @@ export function magnetSnapPoint(
   opts: {
     ignoreWallId?: string;
     magnetMm?: number;
+    segmentMagnetMm?: number;
     grid?: number;
-    /** Prefer free movement — only magnet, no forced grid when far */
     freeWhenFar?: boolean;
-    /** Extra preference for endpoints over segments (mm) */
     endpointBiasMm?: number;
+    from?: Point;
   } = {},
 ): MagnetHit {
-  const magnetMm = opts.magnetMm ?? WALL_MAGNET_MM;
+  const endpointMagnet = opts.magnetMm ?? WALL_MAGNET_MM;
+  const segmentMagnet = opts.segmentMagnetMm ?? SEGMENT_MAGNET_MM;
   const grid = opts.grid ?? 100;
   const endpointBias = opts.endpointBiasMm ?? ENDPOINT_BIAS_MM;
+
+  let cursor = { x: p.x, y: p.y };
+  if (opts.from) cursor = orthoSnapFrom(opts.from, cursor);
 
   const best = {
     end: null as MagnetHit | null,
     seg: null as MagnetHit | null,
   };
 
-  const considerEndpoint = (point: Point, wallId: string, d: number, withinMagnet: boolean) => {
-    if (withinMagnet && d > magnetMm) return;
-    if (!best.end || d < best.end.strength) {
-      best.end = { point: { ...point }, kind: 'endpoint', wallId, strength: d };
-    }
-  };
-
   for (const wall of walls) {
     if (opts.ignoreWallId && wall.id === opts.ignoreWallId) continue;
 
-    considerEndpoint(wall.a, wall.id, dist(p, wall.a), true);
-    considerEndpoint(wall.b, wall.id, dist(p, wall.b), true);
+    for (const end of [wall.a, wall.b]) {
+      const d = dist(cursor, end);
+      if (d <= endpointMagnet && (!best.end || d < best.end.strength)) {
+        best.end = { point: { x: end.x, y: end.y }, kind: 'endpoint', wallId: wall.id, strength: d };
+      }
+    }
 
-    const hit = projectPointOnSegment(p, wall.a, wall.b);
-    if (hit.dist > magnetMm) continue;
-
+    const hit = projectPointOnSegment(cursor, wall.a, wall.b);
     const len = wallLength(wall);
     if (len < 1) continue;
     const alongFromA = hit.t * len;
     const alongFromB = (1 - hit.t) * len;
-    const promote = Math.min(END_PROMOTE_MM, Math.max(magnetMm, len * 0.08));
+    const promote = Math.min(END_PROMOTE_MM, Math.max(endpointMagnet, len * 0.12));
 
-    // Near a tip → butt join to that endpoint (even if tip itself is slightly
-    // farther than magnetMm — cursor is already on the wall near the corner).
-    if (alongFromA <= promote) {
-      considerEndpoint(wall.a, wall.id, Math.min(dist(p, wall.a), hit.dist), false);
+    // Close to a tip along the wall → always tip-to-tip, never nest into body
+    if (hit.dist <= endpointMagnet && alongFromA <= promote) {
+      const d = dist(cursor, wall.a);
+      const strength = Math.min(d, hit.dist);
+      if (!best.end || strength < best.end.strength) {
+        best.end = {
+          point: { x: wall.a.x, y: wall.a.y },
+          kind: 'endpoint',
+          wallId: wall.id,
+          strength,
+        };
+      }
       continue;
     }
-    if (alongFromB <= promote) {
-      considerEndpoint(wall.b, wall.id, Math.min(dist(p, wall.b), hit.dist), false);
+    if (hit.dist <= endpointMagnet && alongFromB <= promote) {
+      const d = dist(cursor, wall.b);
+      const strength = Math.min(d, hit.dist);
+      if (!best.end || strength < best.end.strength) {
+        best.end = {
+          point: { x: wall.b.x, y: wall.b.y },
+          kind: 'endpoint',
+          wallId: wall.id,
+          strength,
+        };
+      }
       continue;
     }
 
-    if (!best.seg || hit.dist < best.seg.strength) {
+    // True mid-span T only with tighter perpendicular magnet
+    if (hit.dist <= segmentMagnet && (!best.seg || hit.dist < best.seg.strength)) {
       best.seg = {
-        point: { ...hit.point },
+        point: { x: hit.point.x, y: hit.point.y },
         kind: 'segment',
         wallId: wall.id,
         strength: hit.dist,
@@ -129,9 +161,97 @@ export function magnetSnapPoint(
   if (best.seg) return best.seg;
 
   if (opts.freeWhenFar) {
-    return { point: { x: p.x, y: p.y }, kind: 'grid', strength: Infinity };
+    return { point: cursor, kind: 'grid', strength: Infinity };
   }
-  return { point: snapPoint(p, grid), kind: 'grid', strength: Infinity };
+  return { point: snapPoint(cursor, grid), kind: 'grid', strength: Infinity };
+}
+
+/**
+ * Weld nearby tips on the same floor to identical coordinates so corner
+ * nodes (California) see a shared point.
+ */
+export function weldWallEndpoints(
+  walls: Wall[],
+  floor: number,
+  weldMm = ENDPOINT_WELD_MM,
+): Wall[] {
+  type Tip = { wallId: string; end: 'a' | 'b'; x: number; y: number };
+  const tips: Tip[] = [];
+  for (const w of walls) {
+    if (w.floor !== floor) continue;
+    tips.push({ wallId: w.id, end: 'a', x: w.a.x, y: w.a.y });
+    tips.push({ wallId: w.id, end: 'b', x: w.b.x, y: w.b.y });
+  }
+
+  const parent = tips.map((_, i) => i);
+  const find = (i: number): number => {
+    if (parent[i] !== i) parent[i] = find(parent[i]);
+    return parent[i];
+  };
+  const unite = (i: number, j: number) => {
+    const a = find(i);
+    const b = find(j);
+    if (a !== b) parent[b] = a;
+  };
+
+  for (let i = 0; i < tips.length; i++) {
+    for (let j = i + 1; j < tips.length; j++) {
+      if (tips[i].wallId === tips[j].wallId) continue;
+      if (dist(tips[i], tips[j]) <= weldMm) unite(i, j);
+    }
+  }
+
+  const clusterPoint = new Map<number, Point>();
+  for (let i = 0; i < tips.length; i++) {
+    const root = find(i);
+    if (!clusterPoint.has(root)) {
+      clusterPoint.set(root, { x: tips[i].x, y: tips[i].y });
+    }
+  }
+
+  const next = walls.map((w) => ({ ...w, a: { ...w.a }, b: { ...w.b } }));
+  for (let i = 0; i < tips.length; i++) {
+    const root = find(i);
+    const members = tips.filter((_, k) => find(k) === root);
+    if (members.length < 2) continue;
+    const pt = clusterPoint.get(root)!;
+    const tip = tips[i];
+    const wall = next.find((w) => w.id === tip.wallId);
+    if (!wall) continue;
+    wall[tip.end] = { x: pt.x, y: pt.y };
+  }
+  return next;
+}
+
+/**
+ * Draw endpoints inset at shared corners so thick strokes butt tip-to-face
+ * instead of crossing through each other. Logical wall.a/b stay at the
+ * shared centerline tip for framing nodes.
+ */
+export function wallRenderEndpoints(
+  wall: Wall,
+  all: Wall[],
+  eps = 2,
+): { a: Point; b: Point } {
+  const insetTip = (tip: Point, other: Point): Point => {
+    const mates = all.filter(
+      (w) =>
+        w.id !== wall.id &&
+        w.floor === wall.floor &&
+        (dist(w.a, tip) <= eps || dist(w.b, tip) <= eps),
+    );
+    if (!mates.length) return tip;
+    const inset = Math.max(...mates.map((m) => m.thickness)) / 2;
+    const len = dist(tip, other);
+    if (len < inset + 80) return tip;
+    const ux = (other.x - tip.x) / len;
+    const uy = (other.y - tip.y) / len;
+    return { x: tip.x + ux * inset, y: tip.y + uy * inset };
+  };
+  return {
+    a: insetTip(wall.a, wall.b),
+    b: insetTip(wall.b, wall.a),
+  };
 }
 
 export function projectPointOnSegment(p: Point, a: Point, b: Point): { point: Point; t: number; dist: number } {
