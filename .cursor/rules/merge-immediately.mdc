@@ -1,0 +1,14 @@
+---
+description: Сразу мержить изменения в main после готовности PR
+alwaysApply: true
+---
+
+# Merge immediately
+
+После того как изменения готовы (lint/build/smoke зелёные, PR создан или обновлён):
+
+1. **Сразу мержи в `main`** — не оставляй работу только в draft/feature-ветке.
+2. Деплой GitHub Pages идёт с `main`; пока PR не смержен, на сайте останется старый билд.
+3. Порядок: commit → push feature-ветки → создать/обновить PR → **merge в `main`** → убедиться, что CI deploy прошёл.
+4. Для merge предпочитай слияние feature-ветки в `main` и `git push origin main` (если `gh pr merge` недоступен).
+5. После merge bump `APP_BUILD` уже должен быть в `main`, иначе на демо будет старый номер.
