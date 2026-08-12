@@ -8,7 +8,7 @@ import {
   wallLength,
   resolveDraftSnap,
   wallSegmentCollides,
-  weldWallEndpoints,
+  finalizeWallJoins,
   gridStepForScale,
 } from '../domain/geometry';
 import type {
@@ -38,11 +38,12 @@ function demoProject(): Project {
     updatedAt: new Date().toISOString(),
     settings: { ...DEFAULT_SETTINGS, insulation: { ...DEFAULT_SETTINGS.insulation }, climate: { ...DEFAULT_SETTINGS.climate }, studSectionMm: { ...DEFAULT_SETTINGS.studSectionMm }, joistSectionMm: { ...DEFAULT_SETTINGS.joistSectionMm } },
     walls: [
-      { id: w1, a: { x: 0, y: 0 }, b: { x: 8000, y: 0 }, thickness: 200, kind: 'exterior', height: 2700, floor: 0 },
-      { id: w2, a: { x: 8000, y: 0 }, b: { x: 8000, y: 6000 }, thickness: 200, kind: 'exterior', height: 2700, floor: 0 },
-      { id: w3, a: { x: 8000, y: 6000 }, b: { x: 0, y: 6000 }, thickness: 200, kind: 'exterior', height: 2700, floor: 0 },
-      { id: w4, a: { x: 0, y: 6000 }, b: { x: 0, y: 0 }, thickness: 200, kind: 'exterior', height: 2700, floor: 0 },
-      { id: w5, a: { x: 4000, y: 0 }, b: { x: 4000, y: 6000 }, thickness: 120, kind: 'interior', height: 2700, floor: 0 },
+      // Planner-style outer 8×6 m, t=200: through H = 8000, butt V = 7600
+      { id: w1, a: { x: 0, y: 100 }, b: { x: 8000, y: 100 }, thickness: 200, kind: 'exterior', height: 2700, floor: 0 },
+      { id: w2, a: { x: 7900, y: 200 }, b: { x: 7900, y: 5800 }, thickness: 200, kind: 'exterior', height: 2700, floor: 0 },
+      { id: w3, a: { x: 8000, y: 5900 }, b: { x: 0, y: 5900 }, thickness: 200, kind: 'exterior', height: 2700, floor: 0 },
+      { id: w4, a: { x: 100, y: 5800 }, b: { x: 100, y: 200 }, thickness: 200, kind: 'exterior', height: 2700, floor: 0 },
+      { id: w5, a: { x: 4000, y: 200 }, b: { x: 4000, y: 5800 }, thickness: 120, kind: 'interior', height: 2700, floor: 0 },
     ],
     openings: [
       { id: uid('op'), wallId: w1, type: 'window', offset: 1200, width: 1200, height: 1400, sillHeight: 900, label: 'Окно 1' },
@@ -149,9 +150,10 @@ export const useEditorStore = create<EditorState>()(
           }),
         })),
       beginWall: (p) => {
-        const { project, scale } = get();
+        const { project, scale, wallKind } = get();
         const walls = project.walls.filter((w) => w.floor === project.activeFloor);
-        const hit = resolveDraftSnap(p, walls, { scale });
+        const selfThickness = wallKind === 'exterior' ? 200 : 120;
+        const hit = resolveDraftSnap(p, walls, { scale, selfThickness });
         set({ draftStart: hit.point });
       },
       cancelDraft: () => set({ draftStart: null }),
@@ -160,15 +162,19 @@ export const useEditorStore = create<EditorState>()(
         if (!start) return;
         const { project, wallKind, scale } = get();
         const walls = project.walls.filter((w) => w.floor === project.activeFloor);
+        const selfThickness = wallKind === 'exterior' ? 200 : 120;
         // p may already be snapped by canvas; resolve again for safety
-        let end = resolveDraftSnap(p, walls, { from: start, scale }).point;
+        let end = resolveDraftSnap(p, walls, { from: start, scale, selfThickness }).point;
         if (Math.hypot(end.x - start.x, end.y - start.y) < 200) {
           set({ draftStart: null });
           return;
         }
         if (wallSegmentCollides(start, end, walls)) {
-          const retry = resolveDraftSnap(p, walls, { from: start, scale });
-          if (retry.kind === 'endpoint' && !wallSegmentCollides(start, retry.point, walls)) {
+          const retry = resolveDraftSnap(p, walls, { from: start, scale, selfThickness });
+          if (
+            (retry.kind === 'endpoint' || retry.kind === 'endface' || retry.kind === 'face') &&
+            !wallSegmentCollides(start, retry.point, walls)
+          ) {
             end = retry.point;
           } else {
             set({ draftStart: null });
@@ -179,16 +185,16 @@ export const useEditorStore = create<EditorState>()(
           id: uid('wall'),
           a: start,
           b: end,
-          thickness: wallKind === 'exterior' ? 200 : 120,
+          thickness: selfThickness,
           kind: wallKind,
           height: project.settings.floorHeightMm,
           floor: project.activeFloor,
         };
-        const welded = weldWallEndpoints([...project.walls, wall], project.activeFloor);
+        const joined = finalizeWallJoins([...project.walls, wall], project.activeFloor);
         set({
           draftStart: null,
           selectedId: wall.id,
-          project: touch({ ...project, walls: welded }),
+          project: touch({ ...project, walls: joined }),
         });
       },
       addOpeningAt: (world, type) => {
@@ -299,10 +305,14 @@ export const useEditorStore = create<EditorState>()(
             ignoreWallId: id,
             from: fixed,
             scale: s.scale,
+            selfThickness: wall.thickness,
           });
           let p = hit.point;
           if (wallSegmentCollides(fixed, p, others)) {
-            if (hit.kind === 'endpoint' && !wallSegmentCollides(fixed, hit.point, others)) {
+            if (
+              (hit.kind === 'endpoint' || hit.kind === 'endface' || hit.kind === 'face') &&
+              !wallSegmentCollides(fixed, hit.point, others)
+            ) {
               p = hit.point;
             } else {
               return s;
@@ -315,7 +325,7 @@ export const useEditorStore = create<EditorState>()(
           return {
             project: touch({
               ...s.project,
-              walls: weldWallEndpoints(walls, s.project.activeFloor),
+              walls: finalizeWallJoins(walls, s.project.activeFloor),
             }),
           };
         }),
@@ -331,6 +341,7 @@ export const useEditorStore = create<EditorState>()(
           ignoreWallId: id,
           from: fixed,
           scale: s.scale,
+          selfThickness: wall.thickness,
         });
         if (wallSegmentCollides(fixed, hit.point, others)) return wall[end];
         return hit.point;
@@ -347,7 +358,10 @@ export const useEditorStore = create<EditorState>()(
           const candidates: { dx: number; dy: number; dist: number }[] = [];
           for (const end of ['a', 'b'] as const) {
             const raw = { x: wall[end].x + dx, y: wall[end].y + dy };
-            const hit = resolveDraftSnap(raw, others, { scale: s.scale });
+            const hit = resolveDraftSnap(raw, others, {
+              scale: s.scale,
+              selfThickness: wall.thickness,
+            });
             if (hit.kind !== 'grid') {
               candidates.push({
                 dx: hit.point.x - wall[end].x,
@@ -365,7 +379,7 @@ export const useEditorStore = create<EditorState>()(
             const snapped = resolveDraftSnap(
               { x: wall.a.x + dx, y: wall.a.y + dy },
               others,
-              { scale: s.scale },
+              { scale: s.scale, selfThickness: wall.thickness },
             ).point;
             adx = snapped.x - wall.a.x;
             ady = snapped.y - wall.a.y;
@@ -379,7 +393,7 @@ export const useEditorStore = create<EditorState>()(
           return {
             project: touch({
               ...s.project,
-              walls: weldWallEndpoints(walls, s.project.activeFloor),
+              walls: finalizeWallJoins(walls, s.project.activeFloor),
             }),
           };
         }),

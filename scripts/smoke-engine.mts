@@ -1,5 +1,15 @@
 import { DEFAULT_SETTINGS } from '../src/domain/materials';
-import { magnetSnapPoint, weldWallEndpoints, wallPolygonPoints, resolveDraftSnap, GRID_MM, gridStepForScale } from '../src/domain/geometry';
+import {
+  magnetSnapPoint,
+  weldWallEndpoints,
+  wallPolygonPoints,
+  resolveDraftSnap,
+  GRID_MM,
+  gridStepForScale,
+  applyButtJoins,
+  finalizeWallJoins,
+  wallLength,
+} from '../src/domain/geometry';
 import { generateFrameModel } from '../src/engine/frameEngine';
 import { headerHeightMm } from '../src/engine/frameGeometry';
 import type { Project } from '../src/domain/types';
@@ -229,7 +239,7 @@ if (
   process.exit(1);
 }
 
-// —— Magnet: face (в торец) first; tip-to-tip only when close to tip ——
+// —— Magnet: грань/торец (not centerline); tip-to-tip only when sticky/forced ——
 const existing = [
   {
     id: 'h',
@@ -242,22 +252,18 @@ const existing = [
   },
 ];
 
-// Near tip but not ON tip → face/butt on the wall, NOT угол на угол
-const approach = { x: 100, y: 120 };
-const cornerHit = magnetSnapPoint(approach, existing, { freeWhenFar: true });
+// Mid-span approach → long face at y=±100, not centerline y=0
 const midApproach = { x: 3000, y: 80 };
-const midHit = magnetSnapPoint(midApproach, existing, { freeWhenFar: true });
-// Still outside tip radius → face
-const farCorner = { x: 150, y: 160 };
-const farHit = magnetSnapPoint(farCorner, existing, { freeWhenFar: true });
-// Along wall near tip → still face (no promote-to-tip)
-const inset = { x: 350, y: 80 };
-const insetHit = magnetSnapPoint(inset, existing, { freeWhenFar: true });
+const midHit = magnetSnapPoint(midApproach, existing, { freeWhenFar: true, selfThickness: 200 });
+// Along face away from tips
 const alongFace = { x: 1200, y: 80 };
-const faceHit = magnetSnapPoint(alongFace, existing, { freeWhenFar: true });
-// Push further into the tip → угол на угол
-const tipClose = { x: 50, y: 40 };
-const tipHit = magnetSnapPoint(tipClose, existing, { freeWhenFar: true });
+const faceHit = magnetSnapPoint(alongFace, existing, { freeWhenFar: true, selfThickness: 200 });
+// Near end → торец (endface), not axis tip
+const nearEnd = { x: 40, y: 30 };
+const endHit = magnetSnapPoint(nearEnd, existing, { freeWhenFar: true, selfThickness: 200 });
+// Far from wall → grid
+const farAway = { x: 900, y: 900 };
+const farHit = magnetSnapPoint(farAway, existing, { freeWhenFar: true });
 
 // Hysteresis: once on tip, stay while inside tip release radius
 const sticky = resolveDraftSnap({ x: 80, y: 80 }, existing, {
@@ -275,37 +281,99 @@ if (stickyRelease.kind === 'endpoint' && stickyRelease.point.x === 0 && stickyRe
   process.exit(1);
 }
 
+// Sticky face lock stays on face
+const stickyFace = resolveDraftSnap({ x: 3010, y: 130 }, existing, {
+  prev: { point: { x: 3000, y: 100 }, kind: 'face', wallId: 'h', strength: 20 },
+  selfThickness: 200,
+});
+if (stickyFace.kind !== 'face' || Math.abs(stickyFace.point.y) - 100 > 1) {
+  console.error('Sticky face lock failed', stickyFace);
+  process.exit(1);
+}
+
 const magnetReport = {
-  cornerKind: cornerHit.kind,
-  cornerAt: cornerHit.point,
   midKind: midHit.kind,
   midAt: midHit.point,
-  farKind: farHit.kind,
-  farAt: farHit.point,
-  insetKind: insetHit.kind,
-  insetAt: insetHit.point,
   faceKind: faceHit.kind,
   faceAt: faceHit.point,
-  tipKind: tipHit.kind,
-  tipAt: tipHit.point,
+  endKind: endHit.kind,
+  endAt: endHit.point,
+  farKind: farHit.kind,
+  farAt: farHit.point,
 };
 
 console.log('magnet', JSON.stringify(magnetReport, null, 2));
 
 if (
-  cornerHit.kind !== 'segment' ||
-  Math.abs(cornerHit.point.y) > 1 ||
-  midHit.kind !== 'segment' ||
+  midHit.kind !== 'face' ||
   Math.abs(midHit.point.x - 3000) > 1 ||
-  Math.abs(midHit.point.y - 0) > 1 ||
-  farHit.kind !== 'segment' ||
-  insetHit.kind !== 'segment' ||
-  Math.abs(insetHit.point.y) > 1 ||
-  faceHit.kind !== 'segment' ||
-  tipHit.kind !== 'endpoint' ||
-  Math.hypot(tipHit.point.x - 0, tipHit.point.y - 0) > 1
+  Math.abs(Math.abs(midHit.point.y) - 100) > 1 ||
+  faceHit.kind !== 'face' ||
+  Math.abs(Math.abs(faceHit.point.y) - 100) > 1 ||
+  endHit.kind !== 'endface' ||
+  Math.abs(endHit.point.x) > 1 ||
+  farHit.kind !== 'grid'
 ) {
   console.error('Magnet smoke failed', magnetReport);
+  process.exit(1);
+}
+
+// Planner 6×6 square, t=150 → lengths 6000 / 5700
+const squareShared = [
+  {
+    id: 's1',
+    a: { x: 0, y: 0 },
+    b: { x: 6000, y: 0 },
+    thickness: 150,
+    kind: 'exterior' as const,
+    height: 2700,
+    floor: 0 as const,
+  },
+  {
+    id: 's2',
+    a: { x: 6000, y: 0 },
+    b: { x: 6000, y: 6000 },
+    thickness: 150,
+    kind: 'exterior' as const,
+    height: 2700,
+    floor: 0 as const,
+  },
+  {
+    id: 's3',
+    a: { x: 6000, y: 6000 },
+    b: { x: 0, y: 6000 },
+    thickness: 150,
+    kind: 'exterior' as const,
+    height: 2700,
+    floor: 0 as const,
+  },
+  {
+    id: 's4',
+    a: { x: 0, y: 6000 },
+    b: { x: 0, y: 0 },
+    thickness: 150,
+    kind: 'exterior' as const,
+    height: 2700,
+    floor: 0 as const,
+  },
+];
+const squareJoined = finalizeWallJoins(squareShared, 0);
+const squareLens = squareJoined.map((w) => Math.round(wallLength(w))).sort((a, b) => b - a);
+console.log('square6', { lens: squareLens, walls: squareJoined.map((w) => ({ id: w.id, a: w.a, b: w.b, len: wallLength(w) })) });
+if (
+  squareLens[0] !== 6000 ||
+  squareLens[1] !== 6000 ||
+  squareLens[2] !== 5700 ||
+  squareLens[3] !== 5700
+) {
+  console.error('Planner 6×6 butt lengths failed', squareLens);
+  process.exit(1);
+}
+// Weld must not collapse butt offsets back to shared tips
+const squareWeldedAgain = weldWallEndpoints(squareJoined, 0);
+const lensAgain = squareWeldedAgain.map((w) => Math.round(wallLength(w))).sort((a, b) => b - a);
+if (lensAgain.join(',') !== '6000,6000,5700,5700') {
+  console.error('Weld collapsed butt offsets', lensAgain);
   process.exit(1);
 }
 
@@ -475,4 +543,61 @@ if (californiaAtCorner < 3) {
   process.exit(1);
 }
 console.log('cornerNodes', { californiaAtCorner });
+
+// California corners still assemble on Planner butt-offset tips
+const buttCornerProject: Project = {
+  ...project,
+  id: 't-butt-corner',
+  walls: finalizeWallJoins(
+    [
+      {
+        id: 'b1',
+        a: { x: 0, y: 0 },
+        b: { x: 4000, y: 0 },
+        thickness: 150,
+        kind: 'exterior',
+        height: 2700,
+        floor: 0,
+      },
+      {
+        id: 'b2',
+        a: { x: 4000, y: 0 },
+        b: { x: 4000, y: 4000 },
+        thickness: 150,
+        kind: 'exterior',
+        height: 2700,
+        floor: 0,
+      },
+      {
+        id: 'b3',
+        a: { x: 4000, y: 4000 },
+        b: { x: 0, y: 4000 },
+        thickness: 150,
+        kind: 'exterior',
+        height: 2700,
+        floor: 0,
+      },
+      {
+        id: 'b4',
+        a: { x: 0, y: 4000 },
+        b: { x: 0, y: 0 },
+        thickness: 150,
+        kind: 'exterior',
+        height: 2700,
+        floor: 0,
+      },
+    ],
+    0,
+  ),
+  openings: [],
+};
+const buttCornerModel = generateFrameModel(buttCornerProject);
+const buttCalifornia = buttCornerModel.members.filter((m) =>
+  m.label.includes('Калифорнийский'),
+).length;
+if (buttCalifornia < 12) {
+  console.error('Butt-offset corner nodes not assembled', { buttCalifornia });
+  process.exit(1);
+}
+console.log('buttCornerNodes', { buttCalifornia });
 

@@ -19,7 +19,7 @@ import type { Tool } from '../domain/types';
 
 const TOOLS: { id: Tool; label: string; hint: string }[] = [
   { id: 'select', label: 'Выбор', hint: 'ЛКМ по пустому — панорама' },
-  { id: 'wall', label: 'Стена', hint: 'Два клика · сетка 100 мм · магнит к стенам' },
+  { id: 'wall', label: 'Стена', hint: 'Два клика · магнит к грани/торцу' },
   { id: 'window', label: 'Окно', hint: 'Клик по стене' },
   { id: 'door', label: 'Дверь', hint: 'Клик по стене' },
   { id: 'delete', label: 'Удалить', hint: 'Клик по объекту' },
@@ -43,7 +43,7 @@ export function PlanCanvas() {
   const [magnetAt, setMagnetAt] = useState<{
     x: number;
     y: number;
-    kind: 'endpoint' | 'segment' | 'grid';
+    kind: MagnetHit['kind'];
   } | null>(null);
 
   const {
@@ -67,7 +67,10 @@ export function PlanCanvas() {
     previewEndpointSnap,
     setOffset,
     setScale,
+    wallKind,
   } = useEditorStore();
+
+  const draftThickness = wallKind === 'exterior' ? 200 : 120;
 
   useEffect(() => {
     const el = containerRef.current;
@@ -172,7 +175,14 @@ export function PlanCanvas() {
 
     if (tool === 'wall') {
       if (!draftStart) beginWall(world);
-      else finishWall(resolveDraftSnap(world, walls, { from: draftStart, scale }).point);
+      else
+        finishWall(
+          resolveDraftSnap(world, walls, {
+            from: draftStart,
+            scale,
+            selfThickness: draftThickness,
+          }).point,
+        );
       return;
     }
     if (tool === 'window') {
@@ -245,6 +255,7 @@ export function PlanCanvas() {
               from: draftStart ?? undefined,
               prev: snapPrevRef.current,
               scale,
+              selfThickness: draftThickness,
             });
             snapPrevRef.current = hit;
             setHover(hit.point);
@@ -336,7 +347,14 @@ export function PlanCanvas() {
                       if (!pos) return;
                       const world = toWorld(pos.x, pos.y);
                       if (!draftStart) beginWall(world);
-                      else finishWall(resolveDraftSnap(world, walls, { from: draftStart, scale }).point);
+                      else
+                        finishWall(
+                          resolveDraftSnap(world, walls, {
+                            from: draftStart,
+                            scale,
+                            selfThickness: draftThickness,
+                          }).point,
+                        );
                       return;
                     }
                     select(wall.id);
@@ -601,7 +619,7 @@ export function PlanCanvas() {
       </Stage>
 
       <div className="canvas-hint">
-        build {APP_BUILD} · сетка {gridMm} мм · торец→угол · V/W/O/D
+        build {APP_BUILD} · сетка {gridMm} мм · магнит к грани/торцу · V/W/O/D
       </div>
     </div>
   );

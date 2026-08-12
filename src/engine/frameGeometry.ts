@@ -4,6 +4,7 @@ import {
   uid,
   wallAngle,
   wallLength,
+  wallFaces,
 } from '../domain/geometry';
 import type {
   FloorLevel,
@@ -320,9 +321,27 @@ export function buildWallMembers(
   }
 }
 
-/** Shared corner tolerance — must cover magnet/grid rounding so California nodes assemble. */
+/** Shared corner tolerance — tip-to-tip or Planner butt dock (tip on mate face near tip). */
 function near(a: Point, b: Point, eps = 25): boolean {
   return Math.hypot(a.x - b.x, a.y - b.y) <= eps;
+}
+
+function tipsFormCorner(
+  a: { wall: Wall; end: 'a' | 'b'; point: Point },
+  b: { wall: Wall; end: 'a' | 'b'; point: Point },
+): boolean {
+  const maxT = Math.max(a.wall.thickness, b.wall.thickness);
+  if (near(a.point, b.point, Math.max(25, maxT * 0.2))) return true;
+  // Planner butt: each tip near the other's face, and close to the other's tip within ~t√2
+  const dockR = maxT * 1.6 + 30;
+  if (!near(a.point, b.point, dockR)) return false;
+  const aOnBFace = wallFaces(b.wall).some(
+    (f) => projectPointOnSegment(a.point, f.a, f.b).dist <= b.wall.thickness * 0.55 + 10,
+  );
+  const bOnAFace = wallFaces(a.wall).some(
+    (f) => projectPointOnSegment(b.point, f.a, f.b).dist <= a.wall.thickness * 0.55 + 10,
+  );
+  return aOnBFace || bOnAFace;
 }
 
 /**
@@ -352,7 +371,7 @@ export function buildCaliforniaCorners(
     for (let j = i + 1; j < ends.length; j++) {
       if (ends[j].wall.floor !== ends[i].wall.floor) continue;
       if (ends[j].wall.id === ends[i].wall.id) continue;
-      if (near(ends[i].point, ends[j].point)) group.push(ends[j]);
+      if (tipsFormCorner(ends[i], ends[j])) group.push(ends[j]);
     }
     if (group.length < 2) continue;
     for (const g of group) used.add(`${g.wall.id}:${g.end}`);
@@ -422,20 +441,34 @@ export function buildPartitionJunctions(
   for (const branch of walls) {
     for (const end of ['a', 'b'] as const) {
       const pt = end === 'a' ? branch.a : branch.b;
-      // Skip if this end already meets another wall endpoint (corner handled elsewhere)
-      const meetsCorner = walls.some(
-        (w) =>
-          w.id !== branch.id &&
-          w.floor === branch.floor &&
-          (Math.hypot(w.a.x - pt.x, w.a.y - pt.y) <= eps ||
-            Math.hypot(w.b.x - pt.x, w.b.y - pt.y) <= eps),
-      );
+      // Skip if this end already meets another wall at a corner (shared tip or butt dock)
+      const meetsCorner = walls.some((w) => {
+        if (w.id === branch.id || w.floor !== branch.floor) return false;
+        return tipsFormCorner(
+          { wall: branch, end, point: pt },
+          {
+            wall: w,
+            end: Math.hypot(w.a.x - pt.x, w.a.y - pt.y) <= Math.hypot(w.b.x - pt.x, w.b.y - pt.y) ? 'a' : 'b',
+            point:
+              Math.hypot(w.a.x - pt.x, w.a.y - pt.y) <= Math.hypot(w.b.x - pt.x, w.b.y - pt.y)
+                ? w.a
+                : w.b,
+          },
+        );
+      });
       if (meetsCorner) continue;
 
       for (const host of walls) {
         if (host.id === branch.id || host.floor !== branch.floor) continue;
         const hit = projectPointOnSegment(pt, host.a, host.b);
-        if (hit.dist > eps) continue;
+        // Accept centerline hit OR tip sitting on host face (Planner T-butt)
+        const onFace = wallFaces(host).some(
+          (f) => projectPointOnSegment(pt, f.a, f.b).dist <= 12,
+        );
+        const faceDistOk =
+          hit.dist <= eps ||
+          (onFace && Math.abs(hit.dist - host.thickness / 2) <= host.thickness * 0.35 + 12);
+        if (!faceDistOk) continue;
         // Mid-span only (not near host ends)
         const hostLen = wallLength(host);
         const s = hit.t * hostLen;
