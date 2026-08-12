@@ -1,5 +1,5 @@
 import { SidePanel } from './components/SidePanel';
-import { PlanCanvas } from './components/PlanCanvas';
+import { PlanCanvas } from './components/canvas';
 import { ReportsView } from './components/ReportsView';
 import { useEditorStore } from './store/editorStore';
 import { APP_BUILD } from './version';

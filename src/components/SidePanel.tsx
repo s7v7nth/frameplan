@@ -15,7 +15,6 @@ export function SidePanel() {
     selectedId,
     tool,
     wallKind,
-    setTool,
     setWallKind,
     setActiveFloor,
     updateSettings,
@@ -28,6 +27,7 @@ export function SidePanel() {
     resetDemo,
     copyFloorPlan,
     exportJson,
+    checkpoint,
   } = useEditorStore();
 
   const selectedOpening = project.openings.find((o) => o.id === selectedId);
@@ -56,43 +56,35 @@ export function SidePanel() {
       </label>
 
       <section className="panel-section">
-        <h3>Инструменты</h3>
+        <h3>Стены</h3>
         <p className="muted" style={{ marginBottom: 8 }}>
-          Панель также на чертеже сверху. Горячие клавиши: V выбор, W стена, O окно, D дверь.
+          Инструменты на чертеже: V выбор, W стена, O окно, D дверь, M рулетка. Delete — удалить.
         </p>
-        <div className="tool-grid">
-          {(
-            [
-              ['select', 'Выбор'],
-              ['wall', 'Стена'],
-              ['window', 'Окно'],
-              ['door', 'Дверь'],
-              ['delete', 'Удалить'],
-            ] as const
-          ).map(([id, label]) => (
-            <button
-              key={id}
-              className={tool === id ? 'tool active' : 'tool'}
-              onClick={() => setTool(id)}
-              type="button"
-            >
-              {label}
-            </button>
-          ))}
-        </div>
-        {tool === 'wall' && (
+        {(tool === 'wall' || selectedWall) && (
           <div className="seg">
             <button
               type="button"
-              className={wallKind === 'exterior' ? 'active' : ''}
-              onClick={() => setWallKind('exterior')}
+              className={(selectedWall?.kind ?? wallKind) === 'exterior' ? 'active' : ''}
+              onClick={() => {
+                setWallKind('exterior');
+                if (selectedWall) {
+                  checkpoint();
+                  updateWall(selectedWall.id, { kind: 'exterior', thickness: 200 });
+                }
+              }}
             >
               Наружная
             </button>
             <button
               type="button"
-              className={wallKind === 'interior' ? 'active' : ''}
-              onClick={() => setWallKind('interior')}
+              className={(selectedWall?.kind ?? wallKind) === 'interior' ? 'active' : ''}
+              onClick={() => {
+                setWallKind('interior');
+                if (selectedWall) {
+                  checkpoint();
+                  updateWall(selectedWall.id, { kind: 'interior', thickness: 120 });
+                }
+              }}
             >
               Внутренняя
             </button>
@@ -382,6 +374,7 @@ export function SidePanel() {
             <input
               type="number"
               value={selectedOpening.width}
+              onFocus={() => checkpoint()}
               onChange={(e) => updateOpening(selectedOpening.id, { width: Number(e.target.value) })}
             />
           </label>
@@ -390,6 +383,7 @@ export function SidePanel() {
             <input
               type="number"
               value={selectedOpening.height}
+              onFocus={() => checkpoint()}
               onChange={(e) =>
                 updateOpening(selectedOpening.id, { height: Number(e.target.value) })
               }
@@ -401,6 +395,7 @@ export function SidePanel() {
               <input
                 type="number"
                 value={selectedOpening.sillHeight}
+                onFocus={() => checkpoint()}
                 onChange={(e) =>
                   updateOpening(selectedOpening.id, { sillHeight: Number(e.target.value) })
                 }
@@ -412,6 +407,7 @@ export function SidePanel() {
             <input
               type="number"
               value={selectedOpening.offset}
+              onFocus={() => checkpoint()}
               onChange={(e) =>
                 updateOpening(selectedOpening.id, { offset: Number(e.target.value) })
               }
@@ -432,6 +428,7 @@ export function SidePanel() {
             <input
               type="number"
               value={selectedWall.thickness}
+              onFocus={() => checkpoint()}
               onChange={(e) => updateWall(selectedWall.id, { thickness: Number(e.target.value) })}
             />
           </label>
@@ -439,6 +436,7 @@ export function SidePanel() {
             <span>Тип</span>
             <select
               value={selectedWall.kind}
+              onFocus={() => checkpoint()}
               onChange={(e) =>
                 updateWall(selectedWall.id, {
                   kind: e.target.value as 'exterior' | 'interior',

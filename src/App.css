@@ -172,6 +172,11 @@ select {
   font-size: 0.85rem;
 }
 
+.canvas-tool:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
 .canvas-tool.active {
   background: var(--forest);
   color: #fff;
@@ -183,6 +188,122 @@ select {
   padding: 0 6px;
   border-left: 1px solid var(--line);
   margin-left: 4px;
+}
+
+.canvas-wall-kind {
+  display: flex;
+  gap: 2px;
+  padding: 2px;
+  border-radius: 10px;
+  background: rgba(31, 58, 46, 0.06);
+  border-left: 1px solid var(--line);
+  margin-left: 4px;
+}
+
+.canvas-wall-kind button {
+  border: none;
+  background: transparent;
+  border-radius: 8px;
+  padding: 6px 8px;
+  cursor: pointer;
+  font-size: 0.78rem;
+  color: var(--muted);
+}
+
+.canvas-wall-kind button.active {
+  background: var(--forest);
+  color: #fff;
+}
+
+.canvas-history {
+  display: flex;
+  gap: 2px;
+  border-left: 1px solid var(--line);
+  margin-left: 4px;
+  padding-left: 4px;
+}
+
+.canvas-zoom {
+  position: absolute;
+  right: 14px;
+  top: 12px;
+  z-index: 5;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 4px;
+  border-radius: 12px;
+  background: rgba(255, 252, 248, 0.95);
+  border: 1px solid var(--line);
+  box-shadow: var(--shadow);
+}
+
+.canvas-zoom button {
+  width: 34px;
+  height: 34px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  cursor: pointer;
+  font-size: 1rem;
+  color: var(--ink);
+}
+
+.canvas-zoom button:hover {
+  background: rgba(31, 58, 46, 0.08);
+}
+
+.canvas-toast {
+  position: absolute;
+  left: 50%;
+  top: 70px;
+  transform: translateX(-50%);
+  z-index: 6;
+  padding: 8px 14px;
+  border-radius: 10px;
+  background: rgba(153, 27, 27, 0.92);
+  color: #fff;
+  font-size: 0.85rem;
+  font-weight: 600;
+  pointer-events: none;
+  box-shadow: var(--shadow);
+}
+
+.canvas-statusbar {
+  position: absolute;
+  left: 16px;
+  bottom: 14px;
+  z-index: 5;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+  padding: 8px 12px;
+  border-radius: 999px;
+  background: rgba(255, 252, 248, 0.92);
+  border: 1px solid var(--line);
+  color: var(--muted);
+  font-size: 0.78rem;
+  pointer-events: none;
+  max-width: calc(100% - 32px);
+}
+
+.canvas-statusbar .accent {
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.canvas-hint {
+  position: absolute;
+  left: 16px;
+  bottom: 14px;
+  padding: 8px 12px;
+  border-radius: 999px;
+  background: rgba(255, 252, 248, 0.9);
+  border: 1px solid var(--line);
+  color: var(--muted);
+  font-size: 0.78rem;
+  pointer-events: none;
 }
 
 .topbar-brand {
@@ -343,19 +464,6 @@ select {
   height: 100%;
   position: relative;
   overflow: hidden;
-}
-
-.canvas-hint {
-  position: absolute;
-  left: 16px;
-  bottom: 14px;
-  padding: 8px 12px;
-  border-radius: 999px;
-  background: rgba(255, 252, 248, 0.9);
-  border: 1px solid var(--line);
-  color: var(--muted);
-  font-size: 0.78rem;
-  pointer-events: none;
 }
 
 .reports {

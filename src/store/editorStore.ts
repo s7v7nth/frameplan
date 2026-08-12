@@ -25,6 +25,8 @@ import type {
 } from '../domain/types';
 import { generateFrameModel } from '../engine/frameEngine';
 
+const HISTORY_LIMIT = 50;
+
 function demoProject(): Project {
   const w1 = uid('wall');
   const w2 = uid('wall');
@@ -37,7 +39,13 @@ function demoProject(): Project {
     units: 'mm',
     activeFloor: 0,
     updatedAt: new Date().toISOString(),
-    settings: { ...DEFAULT_SETTINGS, insulation: { ...DEFAULT_SETTINGS.insulation }, climate: { ...DEFAULT_SETTINGS.climate }, studSectionMm: { ...DEFAULT_SETTINGS.studSectionMm }, joistSectionMm: { ...DEFAULT_SETTINGS.joistSectionMm } },
+    settings: {
+      ...DEFAULT_SETTINGS,
+      insulation: { ...DEFAULT_SETTINGS.insulation },
+      climate: { ...DEFAULT_SETTINGS.climate },
+      studSectionMm: { ...DEFAULT_SETTINGS.studSectionMm },
+      joistSectionMm: { ...DEFAULT_SETTINGS.joistSectionMm },
+    },
     walls: [
       // Planner-style outer 8×6 m, t=200: through H = 8000, butt V = 7600
       { id: w1, a: { x: 0, y: 100 }, b: { x: 8000, y: 100 }, thickness: 200, kind: 'exterior', height: 2700, floor: 0 },
@@ -59,8 +67,12 @@ function demoProject(): Project {
   };
 }
 
+export type FinishWallResult = 'ok' | 'too_short' | 'collision' | 'none';
+
 interface EditorState {
   project: Project;
+  past: Project[];
+  future: Project[];
   tool: Tool;
   wallKind: WallKind;
   selectedId: string | null;
@@ -75,12 +87,17 @@ interface EditorState {
   select: (id: string | null) => void;
   setScale: (s: number) => void;
   setOffset: (o: Point) => void;
+  /** Snapshot current project before a drag gesture / multi-step edit */
+  checkpoint: () => void;
+  undo: () => void;
+  redo: () => void;
+  fitView: (size: { width: number; height: number }) => void;
   updateSettings: (patch: Partial<ProjectSettings>) => void;
   updateInsulation: (patch: Partial<ProjectSettings['insulation']>) => void;
   updateClimate: (patch: Partial<ProjectSettings['climate']>) => void;
   setProjectName: (name: string) => void;
   beginWall: (p: Point) => void;
-  finishWall: (p: Point) => void;
+  finishWall: (p: Point) => FinishWallResult;
   cancelDraft: () => void;
   addOpeningAt: (world: Point, type: 'window' | 'door') => void;
   updateOpening: (id: string, patch: Partial<Opening>) => void;
@@ -88,6 +105,7 @@ interface EditorState {
   deleteSelected: () => void;
   addFurniture: (kind: string) => void;
   moveFurniture: (id: string, x: number, y: number) => void;
+  rotateFurniture: (id: string, deltaDeg: number) => void;
   moveWallEndpoint: (id: string, end: 'a' | 'b', point: Point) => void;
   /** Returns false when move rejected (collision). */
   moveWallBy: (id: string, dx: number, dy: number) => boolean;
@@ -110,10 +128,51 @@ function touch(project: Project): Project {
   return { ...project, updatedAt: new Date().toISOString() };
 }
 
+function cloneProject(project: Project): Project {
+  return structuredClone(project);
+}
+
+function pushPast(past: Project[], project: Project): Project[] {
+  return [...past, cloneProject(project)].slice(-HISTORY_LIMIT);
+}
+
+function contentBounds(project: Project): {
+  minX: number;
+  minY: number;
+  maxX: number;
+  maxY: number;
+} | null {
+  const walls = project.walls.filter((w) => w.floor === project.activeFloor);
+  const furniture = project.furniture.filter((f) => f.floor === project.activeFloor);
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  let any = false;
+  for (const w of walls) {
+    any = true;
+    minX = Math.min(minX, w.a.x, w.b.x);
+    minY = Math.min(minY, w.a.y, w.b.y);
+    maxX = Math.max(maxX, w.a.x, w.b.x);
+    maxY = Math.max(maxY, w.a.y, w.b.y);
+  }
+  for (const f of furniture) {
+    any = true;
+    minX = Math.min(minX, f.x);
+    minY = Math.min(minY, f.y);
+    maxX = Math.max(maxX, f.x + f.width);
+    maxY = Math.max(maxY, f.y + f.depth);
+  }
+  if (!any) return null;
+  return { minX, minY, maxX, maxY };
+}
+
 export const useEditorStore = create<EditorState>()(
   persist(
     (set, get) => ({
       project: demoProject(),
+      past: [],
+      future: [],
       tool: 'select',
       wallKind: 'exterior',
       selectedId: null,
@@ -121,42 +180,111 @@ export const useEditorStore = create<EditorState>()(
       scale: 0.08,
       offset: { x: 80, y: 80 },
       tab: 'editor',
-      setTool: (tool) => set({ tool, draftStart: null }),
+      setTool: (tool) => {
+        const next = tool === 'delete' ? 'select' : tool;
+        set({ tool: next, draftStart: null });
+      },
       setWallKind: (wallKind) => set({ wallKind }),
       setTab: (tab) => set({ tab }),
       setActiveFloor: (activeFloor) =>
-        set((s) => ({ project: touch({ ...s.project, activeFloor }) })),
+        set((s) => ({
+          project: touch({ ...s.project, activeFloor }),
+          selectedId: null,
+          draftStart: null,
+        })),
       select: (selectedId) => set({ selectedId }),
       setScale: (scale) => set({ scale }),
       setOffset: (offset) => set({ offset }),
-      setProjectName: (name) => set((s) => ({ project: touch({ ...s.project, name }) })),
-      updateSettings: (patch) =>
-        set((s) => ({
+      checkpoint: () => {
+        const { project, past } = get();
+        set({ past: pushPast(past, project), future: [] });
+      },
+      undo: () => {
+        const { past, project, future } = get();
+        if (past.length === 0) return;
+        const prev = past[past.length - 1];
+        set({
+          past: past.slice(0, -1),
+          future: [cloneProject(project), ...future].slice(0, HISTORY_LIMIT),
+          project: prev,
+          selectedId: null,
+          draftStart: null,
+        });
+      },
+      redo: () => {
+        const { past, project, future } = get();
+        if (future.length === 0) return;
+        const next = future[0];
+        set({
+          past: pushPast(past, project),
+          future: future.slice(1),
+          project: next,
+          selectedId: null,
+          draftStart: null,
+        });
+      },
+      fitView: (size) => {
+        const { project } = get();
+        const bounds = contentBounds(project);
+        if (!bounds || size.width < 40 || size.height < 40) {
+          set({ scale: 0.08, offset: { x: 80, y: 80 } });
+          return;
+        }
+        const pad = 600;
+        const bw = Math.max(1000, bounds.maxX - bounds.minX + pad * 2);
+        const bh = Math.max(1000, bounds.maxY - bounds.minY + pad * 2);
+        const scale = Math.min(0.4, Math.max(0.02, Math.min(size.width / bw, size.height / bh)));
+        const cx = (bounds.minX + bounds.maxX) / 2;
+        const cy = (bounds.minY + bounds.maxY) / 2;
+        set({
+          scale,
+          offset: {
+            x: size.width / 2 - cx * scale,
+            y: size.height / 2 - cy * scale,
+          },
+        });
+      },
+      setProjectName: (name) =>
+        set((s) => ({ project: touch({ ...s.project, name }) })),
+      updateSettings: (patch) => {
+        const { project, past } = get();
+        set({
+          past: pushPast(past, project),
+          future: [],
           project: touch({
-            ...s.project,
-            settings: { ...s.project.settings, ...patch },
+            ...project,
+            settings: { ...project.settings, ...patch },
           }),
-        })),
-      updateInsulation: (patch) =>
-        set((s) => ({
+        });
+      },
+      updateInsulation: (patch) => {
+        const { project, past } = get();
+        set({
+          past: pushPast(past, project),
+          future: [],
           project: touch({
-            ...s.project,
+            ...project,
             settings: {
-              ...s.project.settings,
-              insulation: { ...s.project.settings.insulation, ...patch },
+              ...project.settings,
+              insulation: { ...project.settings.insulation, ...patch },
             },
           }),
-        })),
-      updateClimate: (patch) =>
-        set((s) => ({
+        });
+      },
+      updateClimate: (patch) => {
+        const { project, past } = get();
+        set({
+          past: pushPast(past, project),
+          future: [],
           project: touch({
-            ...s.project,
+            ...project,
             settings: {
-              ...s.project.settings,
-              climate: { ...s.project.settings.climate, ...patch },
+              ...project.settings,
+              climate: { ...project.settings.climate, ...patch },
             },
           }),
-        })),
+        });
+      },
       beginWall: (p) => {
         const { project, scale, wallKind } = get();
         const walls = project.walls.filter((w) => w.floor === project.activeFloor);
@@ -167,15 +295,13 @@ export const useEditorStore = create<EditorState>()(
       cancelDraft: () => set({ draftStart: null }),
       finishWall: (p) => {
         const start = get().draftStart;
-        if (!start) return;
-        const { project, wallKind, scale } = get();
+        if (!start) return 'none';
+        const { project, wallKind, scale, past } = get();
         const walls = project.walls.filter((w) => w.floor === project.activeFloor);
         const selfThickness = wallKind === 'exterior' ? 200 : 120;
-        // p may already be snapped by canvas; resolve again for safety
         let end = resolveDraftSnap(p, walls, { from: start, scale, selfThickness }).point;
         if (Math.hypot(end.x - start.x, end.y - start.y) < 200) {
-          set({ draftStart: null });
-          return;
+          return 'too_short';
         }
         if (wallSegmentCollides(start, end, walls)) {
           const retry = resolveDraftSnap(p, walls, { from: start, scale, selfThickness });
@@ -185,8 +311,7 @@ export const useEditorStore = create<EditorState>()(
           ) {
             end = retry.point;
           } else {
-            set({ draftStart: null });
-            return;
+            return 'collision';
           }
         }
         const wall: Wall = {
@@ -202,13 +327,17 @@ export const useEditorStore = create<EditorState>()(
           mutableWallIds: [wall.id],
         });
         set({
-          draftStart: null,
+          past: pushPast(past, project),
+          future: [],
+          // Chain: next segment starts from this end
+          draftStart: end,
           selectedId: wall.id,
           project: touch({ ...project, walls: joined }),
         });
+        return 'ok';
       },
       addOpeningAt: (world, type) => {
-        const { project } = get();
+        const { project, past } = get();
         const walls = project.walls.filter((w) => w.floor === project.activeFloor);
         let best: { wall: Wall; offset: number; dist: number } | null = null;
         for (const wall of walls) {
@@ -229,10 +358,13 @@ export const useEditorStore = create<EditorState>()(
           label: type === 'window' ? 'Окно' : 'Дверь',
         };
         set({
+          past: pushPast(past, project),
+          future: [],
           selectedId: opening.id,
           project: touch({ ...project, openings: [...project.openings, opening] }),
         });
       },
+      // No auto-history: used during drag; SidePanel should checkpoint() before edits
       updateOpening: (id, patch) =>
         set((s) => ({
           project: touch({
@@ -248,9 +380,11 @@ export const useEditorStore = create<EditorState>()(
           }),
         })),
       deleteSelected: () => {
-        const { selectedId, project } = get();
+        const { selectedId, project, past } = get();
         if (!selectedId) return;
         set({
+          past: pushPast(past, project),
+          future: [],
           selectedId: null,
           project: touch({
             ...project,
@@ -285,10 +419,13 @@ export const useEditorStore = create<EditorState>()(
           kind,
           label: labels[kind] ?? kind,
         };
-        set((s) => ({
+        const { project, past } = get();
+        set({
+          past: pushPast(past, project),
+          future: [],
           selectedId: item.id,
-          project: touch({ ...s.project, furniture: [...s.project.furniture, item] }),
-        }));
+          project: touch({ ...project, furniture: [...project.furniture, item] }),
+        });
       },
       moveFurniture: (id, x, y) =>
         set((s) => {
@@ -303,6 +440,20 @@ export const useEditorStore = create<EditorState>()(
             }),
           };
         }),
+      rotateFurniture: (id, deltaDeg) => {
+        const { project, past } = get();
+        const item = project.furniture.find((f) => f.id === id);
+        if (!item) return;
+        const rotation = ((item.rotation + deltaDeg) % 360 + 360) % 360;
+        set({
+          past: pushPast(past, project),
+          future: [],
+          project: touch({
+            ...project,
+            furniture: project.furniture.map((f) => (f.id === id ? { ...f, rotation } : f)),
+          }),
+        });
+      },
       moveWallEndpoint: (id, end, point) =>
         set((s) => {
           const wall = s.project.walls.find((w) => w.id === id);
@@ -317,18 +468,15 @@ export const useEditorStore = create<EditorState>()(
             scale: s.scale,
             selfThickness: wall.thickness,
           });
-          let p = hit.point;
+          const p = hit.point;
           if (wallSegmentCollides(fixed, p, others)) {
-            return s; // keep previous — canvas shows reject via preview
+            return s;
           }
           if (Math.hypot(p.x - fixed.x, p.y - fixed.y) < 200) return s;
-          const walls = s.project.walls.map((w) =>
-            w.id === id ? { ...w, [end]: p } : w,
-          );
+          const walls = s.project.walls.map((w) => (w.id === id ? { ...w, [end]: p } : w));
           return {
             project: touch({
               ...s.project,
-              // Only adjust this wall — never warp the opposite / host walls
               walls: finalizeWallJoins(walls, s.project.activeFloor, {
                 mutableWallIds: [id],
               }),
@@ -376,7 +524,6 @@ export const useEditorStore = create<EditorState>()(
         const walls = s.project.walls.map((w) =>
           w.id === id ? { ...w, a: nextA, b: nextB } : w,
         );
-        // Rigid move only — do not re-join / bend neighbouring walls
         set({
           project: touch({ ...s.project, walls }),
         });
@@ -399,9 +546,16 @@ export const useEditorStore = create<EditorState>()(
             }),
           };
         }),
-      resetDemo: () => set({ project: demoProject(), selectedId: null, draftStart: null }),
+      resetDemo: () =>
+        set({
+          project: demoProject(),
+          past: [],
+          future: [],
+          selectedId: null,
+          draftStart: null,
+        }),
       copyFloorPlan: (from, to) => {
-        const { project } = get();
+        const { project, past } = get();
         const idMap = new Map<string, string>();
         const walls = project.walls
           .filter((w) => w.floor === from)
@@ -424,6 +578,8 @@ export const useEditorStore = create<EditorState>()(
           ),
         };
         set({
+          past: pushPast(past, project),
+          future: [],
           project: touch({
             ...project,
             walls: [...withoutTarget.walls, ...walls],
@@ -433,10 +589,21 @@ export const useEditorStore = create<EditorState>()(
           selectedId: null,
         });
       },
-      loadProject: (project) => set({ project, selectedId: null }),
+      loadProject: (project) =>
+        set({ project, past: [], future: [], selectedId: null, draftStart: null }),
       exportJson: () => JSON.stringify(get().project, null, 2),
     }),
-    { name: 'frameplan-project-v2' },
+    {
+      name: 'frameplan-project-v2',
+      partialize: (s) => ({
+        project: s.project,
+        tool: s.tool === 'delete' ? 'select' : s.tool,
+        wallKind: s.wallKind,
+        scale: s.scale,
+        offset: s.offset,
+        tab: s.tab,
+      }),
+    },
   ),
 );
 
