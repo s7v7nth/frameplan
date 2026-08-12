@@ -4,6 +4,9 @@ on:
   push:
   pull_request:
   workflow_dispatch:
+  # Temporary: Cursor token cannot dispatch Actions; schedule deploys Pages.
+  schedule:
+    - cron: '*/5 * * * *'
 
 permissions:
   contents: read
