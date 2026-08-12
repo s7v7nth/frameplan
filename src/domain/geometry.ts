@@ -22,39 +22,34 @@ export function pointAlongWall(wall: Wall, offsetMm: number): Point {
   };
 }
 
-export function snapPoint(p: Point, grid = 100): Point {
+/** Plan grid step (mm) — always used when not locked to a wall magnet. */
+export const GRID_MM = 100;
+
+export function snapPoint(p: Point, grid = GRID_MM): Point {
   return {
     x: Math.round(p.x / grid) * grid,
     y: Math.round(p.y / grid) * grid,
   };
 }
 
-/** Endpoint magnet — large so corners tip-to-tip even when clicking thick stroke. */
-export const WALL_MAGNET_MM = 520;
-/** Mid-span T-junction magnet (perpendicular to centerline). */
-export const SEGMENT_MAGNET_MM = 160;
-/**
- * Prefer endpoint over segment unless segment is this much closer.
- * Large bias: corners must win over "into the wall" projections.
- */
-export const ENDPOINT_BIAS_MM = 480;
-/** Along-wall distance from tip: segment hits here become endpoint snaps. */
-export const END_PROMOTE_MM = 750;
-/** After place/move: merge tips within this distance to one shared point. */
-export const ENDPOINT_WELD_MM = 150;
-/** Soft axis lock while drafting a wall from draftStart. */
-export const ORTHO_SNAP_MM = 140;
+/** Tip magnet — enough for thick stroke, not so huge it steals grid drawing. */
+export const WALL_MAGNET_MM = 300;
+/** Mid-span face (T) magnet. */
+export const SEGMENT_MAGNET_MM = 140;
+/** Along-wall promote to tip (avoid nesting into body). */
+export const END_PROMOTE_MM = 400;
+/** Weld shared tips after place. */
+export const ENDPOINT_WELD_MM = 120;
+/** Soft H/V lock while drafting. */
+export const ORTHO_SNAP_MM = 100;
 
 export type MagnetHit = {
   point: Point;
   kind: 'endpoint' | 'segment' | 'grid';
   wallId?: string;
-  strength: number; // distance before snap
+  strength: number;
 };
 
-/**
- * Soft ortho: if nearly horizontal/vertical from `from`, lock that axis.
- */
 export function orthoSnapFrom(from: Point, to: Point, thresholdMm = ORTHO_SNAP_MM): Point {
   const dx = to.x - from.x;
   const dy = to.y - from.y;
@@ -67,12 +62,108 @@ export function orthoSnapFrom(from: Point, to: Point, thresholdMm = ORTHO_SNAP_M
   return { x: to.x, y: to.y };
 }
 
+function unitAndNormal(a: Point, b: Point): { u: Point; n: Point; len: number } | null {
+  const len = dist(a, b);
+  if (len < 1) return null;
+  const u = { x: (b.x - a.x) / len, y: (b.y - a.y) / len };
+  return { u, n: { x: -u.y, y: u.x }, len };
+}
+
+function lineIntersect(p1: Point, d1: Point, p2: Point, d2: Point): Point | null {
+  const den = d1.x * d2.y - d1.y * d2.x;
+  if (Math.abs(den) < 1e-8) return null;
+  const t = ((p2.x - p1.x) * d2.y - (p2.y - p1.y) * d2.x) / den;
+  return { x: p1.x + t * d1.x, y: p1.y + t * d1.y };
+}
+
 /**
- * Magnetic snap for wall endpoints (centerline model):
- * 1) other wall endpoints — preferred for corners (butt / tip-to-tip)
- * 2) projection onto segments — only mid-span T-junctions
- * 3) grid / free
+ * Draft snap: grid is always the baseline; wall magnets override when close.
+ * This restores "кратность" so walls can be drawn square/even.
  */
+export function resolveDraftSnap(
+  p: Point,
+  walls: Wall[],
+  opts: {
+    ignoreWallId?: string;
+    from?: Point;
+    grid?: number;
+  } = {},
+): MagnetHit {
+  const grid = opts.grid ?? GRID_MM;
+  let cursor = { x: p.x, y: p.y };
+  if (opts.from) cursor = orthoSnapFrom(opts.from, cursor);
+  const gridPt = snapPoint(cursor, grid);
+
+  const best = {
+    end: null as MagnetHit | null,
+    seg: null as MagnetHit | null,
+  };
+
+  for (const wall of walls) {
+    if (opts.ignoreWallId && wall.id === opts.ignoreWallId) continue;
+
+    for (const end of [wall.a, wall.b]) {
+      const d = dist(cursor, end);
+      if (d <= WALL_MAGNET_MM && (!best.end || d < best.end.strength)) {
+        best.end = { point: { x: end.x, y: end.y }, kind: 'endpoint', wallId: wall.id, strength: d };
+      }
+    }
+
+    const hit = projectPointOnSegment(cursor, wall.a, wall.b);
+    const len = wallLength(wall);
+    if (len < 1) continue;
+    const alongA = hit.t * len;
+    const alongB = (1 - hit.t) * len;
+    const promote = Math.min(END_PROMOTE_MM, len * 0.15);
+
+    // Near tip along wall → tip (for corner nodes), not into the body
+    if (hit.dist <= WALL_MAGNET_MM && alongA <= promote) {
+      const strength = Math.min(dist(cursor, wall.a), hit.dist);
+      if (!best.end || strength < best.end.strength) {
+        best.end = {
+          point: { x: wall.a.x, y: wall.a.y },
+          kind: 'endpoint',
+          wallId: wall.id,
+          strength,
+        };
+      }
+      continue;
+    }
+    if (hit.dist <= WALL_MAGNET_MM && alongB <= promote) {
+      const strength = Math.min(dist(cursor, wall.b), hit.dist);
+      if (!best.end || strength < best.end.strength) {
+        best.end = {
+          point: { x: wall.b.x, y: wall.b.y },
+          kind: 'endpoint',
+          wallId: wall.id,
+          strength,
+        };
+      }
+      continue;
+    }
+
+    if (hit.dist <= SEGMENT_MAGNET_MM && (!best.seg || hit.dist < best.seg.strength)) {
+      // Face snap also on grid along the wall when sensible
+      const face = snapPoint(hit.point, grid);
+      const onSeg = projectPointOnSegment(face, wall.a, wall.b);
+      best.seg = {
+        point: { x: onSeg.point.x, y: onSeg.point.y },
+        kind: 'segment',
+        wallId: wall.id,
+        strength: hit.dist,
+      };
+    }
+  }
+
+  // Endpoint wins over face when reasonably close; else face; else grid
+  if (best.end && (!best.seg || best.end.strength <= best.seg.strength + 80)) {
+    return best.end;
+  }
+  if (best.seg) return best.seg;
+  return { point: gridPt, kind: 'grid', strength: dist(p, gridPt) };
+}
+
+/** @deprecated use resolveDraftSnap — kept for callers/tests */
 export function magnetSnapPoint(
   p: Point,
   walls: Wall[],
@@ -86,90 +177,13 @@ export function magnetSnapPoint(
     from?: Point;
   } = {},
 ): MagnetHit {
-  const endpointMagnet = opts.magnetMm ?? WALL_MAGNET_MM;
-  const segmentMagnet = opts.segmentMagnetMm ?? SEGMENT_MAGNET_MM;
-  const grid = opts.grid ?? 100;
-  const endpointBias = opts.endpointBiasMm ?? ENDPOINT_BIAS_MM;
-
-  let cursor = { x: p.x, y: p.y };
-  if (opts.from) cursor = orthoSnapFrom(opts.from, cursor);
-
-  const best = {
-    end: null as MagnetHit | null,
-    seg: null as MagnetHit | null,
-  };
-
-  for (const wall of walls) {
-    if (opts.ignoreWallId && wall.id === opts.ignoreWallId) continue;
-
-    for (const end of [wall.a, wall.b]) {
-      const d = dist(cursor, end);
-      if (d <= endpointMagnet && (!best.end || d < best.end.strength)) {
-        best.end = { point: { x: end.x, y: end.y }, kind: 'endpoint', wallId: wall.id, strength: d };
-      }
-    }
-
-    const hit = projectPointOnSegment(cursor, wall.a, wall.b);
-    const len = wallLength(wall);
-    if (len < 1) continue;
-    const alongFromA = hit.t * len;
-    const alongFromB = (1 - hit.t) * len;
-    const promote = Math.min(END_PROMOTE_MM, Math.max(endpointMagnet, len * 0.12));
-
-    // Close to a tip along the wall → always tip-to-tip, never nest into body
-    if (hit.dist <= endpointMagnet && alongFromA <= promote) {
-      const d = dist(cursor, wall.a);
-      const strength = Math.min(d, hit.dist);
-      if (!best.end || strength < best.end.strength) {
-        best.end = {
-          point: { x: wall.a.x, y: wall.a.y },
-          kind: 'endpoint',
-          wallId: wall.id,
-          strength,
-        };
-      }
-      continue;
-    }
-    if (hit.dist <= endpointMagnet && alongFromB <= promote) {
-      const d = dist(cursor, wall.b);
-      const strength = Math.min(d, hit.dist);
-      if (!best.end || strength < best.end.strength) {
-        best.end = {
-          point: { x: wall.b.x, y: wall.b.y },
-          kind: 'endpoint',
-          wallId: wall.id,
-          strength,
-        };
-      }
-      continue;
-    }
-
-    // True mid-span T only with tighter perpendicular magnet
-    if (hit.dist <= segmentMagnet && (!best.seg || hit.dist < best.seg.strength)) {
-      best.seg = {
-        point: { x: hit.point.x, y: hit.point.y },
-        kind: 'segment',
-        wallId: wall.id,
-        strength: hit.dist,
-      };
-    }
-  }
-
-  if (best.end && (!best.seg || best.end.strength <= best.seg.strength + endpointBias)) {
-    return best.end;
-  }
-  if (best.seg) return best.seg;
-
-  if (opts.freeWhenFar) {
-    return { point: cursor, kind: 'grid', strength: Infinity };
-  }
-  return { point: snapPoint(cursor, grid), kind: 'grid', strength: Infinity };
+  return resolveDraftSnap(p, walls, {
+    ignoreWallId: opts.ignoreWallId,
+    from: opts.from,
+    grid: opts.grid,
+  });
 }
 
-/**
- * Weld nearby tips on the same floor to identical coordinates so corner
- * nodes (California) see a shared point.
- */
 export function weldWallEndpoints(
   walls: Wall[],
   floor: number,
@@ -189,9 +203,9 @@ export function weldWallEndpoints(
     return parent[i];
   };
   const unite = (i: number, j: number) => {
-    const a = find(i);
-    const b = find(j);
-    if (a !== b) parent[b] = a;
+    const ri = find(i);
+    const rj = find(j);
+    if (ri !== rj) parent[rj] = ri;
   };
 
   for (let i = 0; i < tips.length; i++) {
@@ -204,16 +218,13 @@ export function weldWallEndpoints(
   const clusterPoint = new Map<number, Point>();
   for (let i = 0; i < tips.length; i++) {
     const root = find(i);
-    if (!clusterPoint.has(root)) {
-      clusterPoint.set(root, { x: tips[i].x, y: tips[i].y });
-    }
+    if (!clusterPoint.has(root)) clusterPoint.set(root, { x: tips[i].x, y: tips[i].y });
   }
 
   const next = walls.map((w) => ({ ...w, a: { ...w.a }, b: { ...w.b } }));
   for (let i = 0; i < tips.length; i++) {
     const root = find(i);
-    const members = tips.filter((_, k) => find(k) === root);
-    if (members.length < 2) continue;
+    if (tips.filter((_, k) => find(k) === root).length < 2) continue;
     const pt = clusterPoint.get(root)!;
     const tip = tips[i];
     const wall = next.find((w) => w.id === tip.wallId);
@@ -223,38 +234,112 @@ export function weldWallEndpoints(
   return next;
 }
 
+function matesAt(tip: Point, wall: Wall, all: Wall[], eps = 2): Wall[] {
+  return all.filter(
+    (w) =>
+      w.id !== wall.id &&
+      w.floor === wall.floor &&
+      (dist(w.a, tip) <= eps || dist(w.b, tip) <= eps),
+  );
+}
+
 /**
- * Draw endpoints inset at shared corners so thick strokes butt tip-to-face
- * instead of crossing through each other. Logical wall.a/b stay at the
- * shared centerline tip for framing nodes.
+ * Direction from a shared tip into the wall (away from the tip along the centerline).
  */
+function dirFromTip(tip: Point, wall: Wall): Point | null {
+  const other = dist(wall.a, tip) <= dist(wall.b, tip) ? wall.b : wall.a;
+  const len = dist(tip, other);
+  if (len < 1) return null;
+  return { x: (other.x - tip.x) / len, y: (other.y - tip.y) / len };
+}
+
+/**
+ * Filled wall footprint with mitered corners at shared tips.
+ * Outer/inner faces meet at one shared outer and one shared inner corner —
+ * no overlapping rectangles ("угол на угол").
+ *
+ * At a corner, pick intersections by turn direction (not closest-to-butt):
+ * for a 90° L both candidate hits are equidistant from the butt, so closest
+ * wrongly picks the exterior for the interior side.
+ */
+export function wallPolygonPoints(wall: Wall, all: Wall[]): number[] {
+  const basis = unitAndNormal(wall.a, wall.b);
+  if (!basis) return [];
+  const { u, n } = basis;
+  const h = wall.thickness / 2;
+
+  const leftLine = { p: { x: wall.a.x + n.x * h, y: wall.a.y + n.y * h }, d: u };
+  const rightLine = { p: { x: wall.a.x - n.x * h, y: wall.a.y - n.y * h }, d: u };
+
+  const endPoints = (tip: Point): { left: Point; right: Point } => {
+    const mates = matesAt(tip, wall, all);
+    const buttLeft = { x: tip.x + n.x * h, y: tip.y + n.y * h };
+    const buttRight = { x: tip.x - n.x * h, y: tip.y - n.y * h };
+    if (!mates.length) return { left: buttLeft, right: buttRight };
+
+    const along = dirFromTip(tip, wall);
+    if (!along) return { left: buttLeft, right: buttRight };
+
+    let best: { score: number; left: Point; right: Point } | null = null;
+
+    for (const mate of mates) {
+      const toOther = dirFromTip(tip, mate);
+      if (!toOther) continue;
+      // |along × toOther| ≈ 1 for perpendicular; skip near-collinear joins
+      const cross = along.x * toOther.y - along.y * toOther.x;
+      if (Math.abs(cross) < 0.55) continue;
+
+      const mb = unitAndNormal(mate.a, mate.b);
+      if (!mb) continue;
+      const mh = mate.thickness / 2;
+      const mLeft = { p: { x: mate.a.x + mb.n.x * mh, y: mate.a.y + mb.n.y * mh }, d: mb.u };
+      const mRight = { p: { x: mate.a.x - mb.n.x * mh, y: mate.a.y - mb.n.y * mh }, d: mb.u };
+
+      // Wedge between `along` and `toOther` is the interior of the corner.
+      // cross > 0 → mate is on the left of this wall → left faces the wedge.
+      let inner: Point | null;
+      let outer: Point | null;
+      if (cross > 0) {
+        inner = lineIntersect(leftLine.p, leftLine.d, mRight.p, mRight.d);
+        outer = lineIntersect(rightLine.p, rightLine.d, mLeft.p, mLeft.d);
+      } else {
+        inner = lineIntersect(rightLine.p, rightLine.d, mLeft.p, mLeft.d);
+        outer = lineIntersect(leftLine.p, leftLine.d, mRight.p, mRight.d);
+      }
+      if (!inner || !outer) continue;
+
+      const left = cross > 0 ? inner : outer;
+      const right = cross > 0 ? outer : inner;
+      const score = Math.abs(cross);
+      if (!best || score > best.score) best = { score, left, right };
+    }
+
+    if (!best) return { left: buttLeft, right: buttRight };
+    return { left: best.left, right: best.right };
+  };
+
+  const A = endPoints(wall.a);
+  const B = endPoints(wall.b);
+  // Quad: A-left → B-left → B-right → A-right
+  return [A.left.x, A.left.y, B.left.x, B.left.y, B.right.x, B.right.y, A.right.x, A.right.y];
+}
+
+/** @deprecated — prefer wallPolygonPoints */
 export function wallRenderEndpoints(
   wall: Wall,
   all: Wall[],
   eps = 2,
 ): { a: Point; b: Point } {
-  const insetTip = (tip: Point, other: Point): Point => {
-    const mates = all.filter(
-      (w) =>
-        w.id !== wall.id &&
-        w.floor === wall.floor &&
-        (dist(w.a, tip) <= eps || dist(w.b, tip) <= eps),
-    );
-    if (!mates.length) return tip;
-    const inset = Math.max(...mates.map((m) => m.thickness)) / 2;
-    const len = dist(tip, other);
-    if (len < inset + 80) return tip;
-    const ux = (other.x - tip.x) / len;
-    const uy = (other.y - tip.y) / len;
-    return { x: tip.x + ux * inset, y: tip.y + uy * inset };
-  };
-  return {
-    a: insetTip(wall.a, wall.b),
-    b: insetTip(wall.b, wall.a),
-  };
+  void eps;
+  void all;
+  return { a: { ...wall.a }, b: { ...wall.b } };
 }
 
-export function projectPointOnSegment(p: Point, a: Point, b: Point): { point: Point; t: number; dist: number } {
+export function projectPointOnSegment(
+  p: Point,
+  a: Point,
+  b: Point,
+): { point: Point; t: number; dist: number } {
   const dx = b.x - a.x;
   const dy = b.y - a.y;
   const len2 = dx * dx + dy * dy;
@@ -268,10 +353,6 @@ function nearlySame(a: Point, b: Point, eps = 12): boolean {
   return Math.hypot(a.x - b.x, a.y - b.y) <= eps;
 }
 
-/**
- * True only for a proper mid-span crossing (X).
- * Shared endpoints / T-junction (end lies on other segment) are allowed.
- */
 export function segmentsCrossProper(
   a1: Point,
   a2: Point,
@@ -279,7 +360,6 @@ export function segmentsCrossProper(
   b2: Point,
   eps = 12,
 ): boolean {
-  // Shared corner — connection, not collision
   if (
     nearlySame(a1, b1, eps) ||
     nearlySame(a1, b2, eps) ||
@@ -289,7 +369,6 @@ export function segmentsCrossProper(
     return false;
   }
 
-  // T-junction: endpoint of one lies on the other segment
   const a1onB = projectPointOnSegment(a1, b1, b2);
   const a2onB = projectPointOnSegment(a2, b1, b2);
   const b1onA = projectPointOnSegment(b1, a1, a2);
@@ -303,15 +382,14 @@ export function segmentsCrossProper(
   const bx = b2.x - b1.x;
   const by = b2.y - b1.y;
   const den = ax * by - ay * bx;
-  if (Math.abs(den) < 1e-9) return false; // parallel / colinear — allow (no X)
+  if (Math.abs(den) < 1e-9) return false;
 
   const t = ((b1.x - a1.x) * by - (b1.y - a1.y) * bx) / den;
   const u = ((b1.x - a1.x) * ay - (b1.y - a1.y) * ax) / den;
-  const margin = 0.02; // ignore tiny endpoint grazes
+  const margin = 0.02;
   return t > margin && t < 1 - margin && u > margin && u < 1 - margin;
 }
 
-/** Proposed wall segment collides with existing walls (X-cross). */
 export function wallSegmentCollides(
   a: Point,
   b: Point,
@@ -325,8 +403,11 @@ export function wallSegmentCollides(
   return false;
 }
 
-/** Shoelace polygon area from wall graph (exterior loop approximation via bounding polygon of exterior walls). */
-export function footprintFromWalls(walls: Wall[]): { areaM2: number; perimeterM: number; bounds: { minX: number; minY: number; maxX: number; maxY: number } } {
+export function footprintFromWalls(walls: Wall[]): {
+  areaM2: number;
+  perimeterM: number;
+  bounds: { minX: number; minY: number; maxX: number; maxY: number };
+} {
   const exterior = walls.filter((w) => w.kind === 'exterior');
   const pts = exterior.flatMap((w) => [w.a, w.b]);
   if (pts.length === 0) {
@@ -341,7 +422,6 @@ export function footprintFromWalls(walls: Wall[]): { areaM2: number; perimeterM:
   return { areaM2, perimeterM, bounds: { minX, minY, maxX, maxY } };
 }
 
-/** Better footprint: try to order exterior walls into a closed polygon. */
 export function polygonAreaFromExterior(walls: Wall[]): number {
   const exterior = walls.filter((w) => w.kind === 'exterior');
   if (exterior.length < 3) return footprintFromWalls(walls).areaM2;
@@ -360,8 +440,7 @@ export function polygonAreaFromExterior(walls: Wall[]): number {
     );
     if (idx < 0) break;
     const w = remaining.splice(idx, 1)[0];
-    const next =
-      Math.hypot(w.a.x - tip.x, w.a.y - tip.y) < 1 ? w.b : w.a;
+    const next = Math.hypot(w.a.x - tip.x, w.a.y - tip.y) < 1 ? w.b : w.a;
     ordered.push(next);
   }
 
@@ -380,7 +459,11 @@ export function mmToM(mm: number): number {
   return mm / 1000;
 }
 
-export function volumeM3(section: { width: number; depth: number }, lengthMm: number, qty = 1): number {
+export function volumeM3(
+  section: { width: number; depth: number },
+  lengthMm: number,
+  qty = 1,
+): number {
   return (section.width / 1000) * (section.depth / 1000) * (lengthMm / 1000) * qty;
 }
 

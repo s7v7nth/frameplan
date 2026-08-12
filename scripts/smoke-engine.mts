@@ -1,5 +1,5 @@
 import { DEFAULT_SETTINGS } from '../src/domain/materials';
-import { magnetSnapPoint, weldWallEndpoints, wallRenderEndpoints } from '../src/domain/geometry';
+import { magnetSnapPoint, weldWallEndpoints, wallPolygonPoints, resolveDraftSnap, GRID_MM } from '../src/domain/geometry';
 import { generateFrameModel } from '../src/engine/frameEngine';
 import { headerHeightMm } from '../src/engine/frameGeometry';
 import type { Project } from '../src/domain/types';
@@ -249,9 +249,12 @@ const midApproach = { x: 3000, y: 80 };
 const midHit = magnetSnapPoint(midApproach, existing, { freeWhenFar: true });
 const farCorner = { x: 180, y: 200 };
 const farHit = magnetSnapPoint(farCorner, existing, { freeWhenFar: true });
-// Click ~450mm along wall — must still promote to tip, not nest into body
-const inset = { x: 450, y: 80 };
+// Click ~350mm along wall — still promote to tip (END_PROMOTE)
+const inset = { x: 350, y: 80 };
 const insetHit = magnetSnapPoint(inset, existing, { freeWhenFar: true });
+// Beyond promote zone → face/grid along wall, NOT nested wrongly into body as endpoint-steal
+const alongFace = { x: 1200, y: 80 };
+const faceHit = magnetSnapPoint(alongFace, existing, { freeWhenFar: true });
 
 const magnetReport = {
   cornerKind: cornerHit.kind,
@@ -262,6 +265,8 @@ const magnetReport = {
   farAt: farHit.point,
   insetKind: insetHit.kind,
   insetAt: insetHit.point,
+  faceKind: faceHit.kind,
+  faceAt: faceHit.point,
 };
 
 console.log('magnet', JSON.stringify(magnetReport, null, 2));
@@ -275,7 +280,8 @@ if (
   farHit.kind !== 'endpoint' ||
   Math.hypot(farHit.point.x - 0, farHit.point.y - 0) > 1 ||
   insetHit.kind !== 'endpoint' ||
-  Math.hypot(insetHit.point.x - 0, insetHit.point.y - 0) > 1
+  Math.hypot(insetHit.point.x - 0, insetHit.point.y - 0) > 1 ||
+  faceHit.kind !== 'segment'
 ) {
   console.error('Magnet smoke failed', magnetReport);
   process.exit(1);
@@ -310,10 +316,18 @@ if (!tipJoined) {
   console.error('Weld failed', welded.map((w) => ({ a: w.a, b: w.b })));
   process.exit(1);
 }
-console.log('weld', { tip: welded[0].a, tipJoined });
+console.log('weld', { tip: welded[0].a, tipJoined: true });
 
-// Render inset: shared corner must shorten draw so strokes don't cross
-const renderWalls = [
+// Grid snap always available away from walls
+const gridHit = resolveDraftSnap({ x: 137, y: 262 }, [], {});
+if (gridHit.kind !== 'grid' || gridHit.point.x !== 100 || gridHit.point.y !== 300) {
+  console.error('Grid snap failed', gridHit, 'expected grid', GRID_MM);
+  process.exit(1);
+}
+console.log('gridSnap', gridHit.point);
+
+// Mitered polygon at L-corner — outer corners extend past centerline tip
+const polyWalls = [
   {
     id: 'r1',
     a: { x: 0, y: 0 },
@@ -333,17 +347,22 @@ const renderWalls = [
     floor: 0 as const,
   },
 ];
-const r1 = wallRenderEndpoints(renderWalls[0], renderWalls);
-const r2 = wallRenderEndpoints(renderWalls[1], renderWalls);
-const renderReport = {
-  r1a: r1.a,
-  r2a: r2.a,
-  hInsetOk: Math.abs(r1.a.x - 100) < 1 && Math.abs(r1.a.y) < 1,
-  vInsetOk: Math.abs(r2.a.x) < 1 && Math.abs(r2.a.y - 100) < 1,
+const polyH = wallPolygonPoints(polyWalls[0], polyWalls);
+const polyV = wallPolygonPoints(polyWalls[1], polyWalls);
+// L at origin: shared outer (-100,-100), shared inner (100,100) — no X-overlap
+const near = (poly: number[], x: number, y: number, eps = 1) => {
+  for (let i = 0; i < poly.length; i += 2) {
+    if (Math.hypot(poly[i] - x, poly[i + 1] - y) <= eps) return true;
+  }
+  return false;
 };
-console.log('renderInset', renderReport);
-if (!renderReport.hInsetOk || !renderReport.vInsetOk) {
-  console.error('Render inset failed', renderReport);
+const hOk =
+  polyH.length === 8 && near(polyH, -100, -100) && near(polyH, 100, 100) && !near(polyH, -100, 100);
+const vOk =
+  polyV.length === 8 && near(polyV, -100, -100) && near(polyV, 100, 100) && !near(polyV, -100, 100);
+console.log('polyMiter', { polyH, polyV, hOk, vOk });
+if (!hOk || !vOk) {
+  console.error('Polygon miter failed', { polyH, polyV, hOk, vOk });
   process.exit(1);
 }
 
