@@ -336,9 +336,6 @@ export function resolveDraftSnap(
   } = {},
 ): MagnetHit {
   const radii = magnetRadiiForScale(opts.scale);
-  const grid =
-    opts.grid ??
-    (opts.scale != null ? snapGridForScale(opts.scale) : GRID_MM);
   const selfThickness = opts.selfThickness ?? 200;
   const raw = { x: p.x, y: p.y };
   const useOrtho = opts.ortho ?? opts.from != null;
@@ -411,8 +408,13 @@ export function resolveDraftSnap(
 
   let cursor = raw;
   if (useOrtho && opts.from) cursor = orthoSnapFrom(opts.from, cursor, radii.ortho);
-  const gridPt = snapPoint(cursor, grid);
-  return { point: gridPt, kind: 'grid', strength: dist(p, gridPt) };
+  // Optional explicit grid (tests / callers). Default: continuous 1 mm free motion.
+  if (opts.grid != null) {
+    const gridPt = snapPoint(cursor, opts.grid);
+    return { point: gridPt, kind: 'grid', strength: dist(p, gridPt) };
+  }
+  const free = roundMm(cursor);
+  return { point: free, kind: 'grid', strength: dist(p, free) };
 }
 
 /** @deprecated use resolveDraftSnap — kept for callers/tests */
@@ -782,15 +784,12 @@ export function resolveTranslateSnap(
   opts: { scale?: number; grid?: number } = {},
 ): { dx: number; dy: number; kind: MagnetKind; ok: boolean } {
   const radii = magnetRadiiForScale(opts.scale);
-  const grid = opts.grid ?? snapGridForScale(opts.scale);
   const dragLen = Math.hypot(dx, dy);
   const dragU = dragLen > 1 ? { x: dx / dragLen, y: dy / dragLen } : { x: 0, y: 0 };
 
-  // Base: fine grid-snap the translation via tip A (continuous-ish, not 200 mm)
-  const rawA = { x: wall.a.x + dx, y: wall.a.y + dy };
-  const gridA = snapPoint(rawA, grid);
-  let adx = gridA.x - wall.a.x;
-  let ady = gridA.y - wall.a.y;
+  // Base: continuous translation (1 mm). Magnets override when near hosts.
+  let adx = Math.round(dx);
+  let ady = Math.round(dy);
 
   type Cand = { dx: number; dy: number; dist: number; kind: MagnetKind };
   const cands: Cand[] = [];

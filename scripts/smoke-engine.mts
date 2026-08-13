@@ -476,13 +476,19 @@ if (!tipJoined) {
 }
 console.log('weld', { tip: welded[0].a, tipJoined: true });
 
-// Grid snap always available away from walls
-const gridHit = resolveDraftSnap({ x: 137, y: 262 }, [], {});
+// Free motion is continuous; explicit grid still available for callers/tests
+const gridHit = resolveDraftSnap({ x: 137, y: 262 }, [], { grid: GRID_MM });
 if (gridHit.kind !== 'grid' || gridHit.point.x !== 100 || gridHit.point.y !== 300) {
   console.error('Grid snap failed', gridHit, 'expected grid', GRID_MM);
   process.exit(1);
 }
 console.log('gridSnap', gridHit.point);
+const freeHit = resolveDraftSnap({ x: 137, y: 262 }, [], { scale: 0.08 });
+if (freeHit.kind !== 'grid' || freeHit.point.x !== 137 || freeHit.point.y !== 262) {
+  console.error('Continuous free snap failed', freeHit);
+  process.exit(1);
+}
+console.log('freeSnap', freeHit.point);
 
 // Through + butt polygon at L-corner — no diagonal "triangle in triangle" miter
 const polyWalls = [
