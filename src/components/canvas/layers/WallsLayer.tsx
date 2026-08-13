@@ -1,17 +1,18 @@
-import { Line, Text, Circle, Group } from 'react-konva';
+import { Line, Text, Rect, Group } from 'react-konva';
 import {
-  wallLength,
   wallPolygonPoints,
   wallCenterlinePoints,
+  wallLengthLabelPose,
   type MagnetHit,
 } from '../../../domain/geometry';
-import type { Point, Tool, Wall } from '../../../domain/types';
+import type { Opening, Point, Tool, Wall } from '../../../domain/types';
 import { useEditorStore } from '../../../store/editorStore';
 import type { MagnetFeedback } from '../interaction/types';
 import { useRef } from 'react';
 
 type Props = {
   walls: Wall[];
+  openings: Opening[];
   tool: Tool;
   selectedId: string | null;
   spacePan: boolean;
@@ -36,6 +37,7 @@ type Props = {
 
 export function WallsLayer({
   walls,
+  openings,
   tool,
   selectedId,
   spacePan,
@@ -192,27 +194,58 @@ export function WallsLayer({
               lineCap="butt"
               listening={false}
             />
-            <Text
-              x={(wall.a.x + wall.b.x) / 2}
-              y={(wall.a.y + wall.b.y) / 2 - 180}
-              text={`${(wallLength(wall) / 1000).toFixed(2)} м`}
-              fontSize={140}
-              fill="#334155"
-              listening={false}
-            />
+            {(() => {
+              const label = wallLengthLabelPose(wall, openings);
+              const tw = 620;
+              const th = 200;
+              return (
+                <Group
+                  x={label.x}
+                  y={label.y}
+                  rotation={label.rotationDeg}
+                  listening={false}
+                >
+                  <Rect
+                    x={-tw / 2}
+                    y={-th / 2}
+                    width={tw}
+                    height={th}
+                    fill="rgba(255, 252, 248, 0.94)"
+                    stroke="#c9d6cb"
+                    strokeWidth={8}
+                    cornerRadius={40}
+                  />
+                  <Text
+                    x={-tw / 2}
+                    y={-th / 2 + 28}
+                    width={tw}
+                    height={th}
+                    align="center"
+                    text={label.text}
+                    fontSize={130}
+                    fill="#14231c"
+                    fontStyle="600"
+                  />
+                </Group>
+              );
+            })()}
             {selected &&
               tool === 'select' &&
               (['a', 'b'] as const).map((end) => {
-                const p = wall[end];
+                const tip = wall[end];
+                const fixed = end === 'a' ? wall.b : wall.a;
+                const span = Math.hypot(fixed.x - tip.x, fixed.y - tip.y) || 1;
+                const inset = Math.min(220, span * 0.18);
+                const ux = (fixed.x - tip.x) / span;
+                const uy = (fixed.y - tip.y) / span;
+                const hx = tip.x + ux * inset;
+                const hy = tip.y + uy * inset;
+                const grip = 70;
                 return (
-                  <Circle
+                  <Group
                     key={end}
-                    x={p.x}
-                    y={p.y}
-                    radius={120}
-                    fill="#c45c26"
-                    stroke="#fff"
-                    strokeWidth={20}
+                    x={hx}
+                    y={hy}
                     draggable={!spacePan && !panning}
                     onMouseDown={(e) => {
                       e.cancelBubble = true;
@@ -223,20 +256,53 @@ export function WallsLayer({
                     }}
                     onDragMove={(e) => {
                       e.cancelBubble = true;
-                      const raw = { x: e.target.x(), y: e.target.y() };
+                      const handle = { x: e.target.x(), y: e.target.y() };
+                      const rawTip = {
+                        x: handle.x - ux * inset,
+                        y: handle.y - uy * inset,
+                      };
                       const prev = endpointSnapPrev.current;
-                      const hit = previewEndpointSnap(wall.id, end, raw, { prev });
+                      const hit = previewEndpointSnap(wall.id, end, rawTip, { prev });
                       endpointSnapPrev.current = hit;
-                      e.target.position(hit.point);
+                      const nextFixed = end === 'a' ? wall.b : wall.a;
+                      const nspan =
+                        Math.hypot(nextFixed.x - hit.point.x, nextFixed.y - hit.point.y) || 1;
+                      const nx = (nextFixed.x - hit.point.x) / nspan;
+                      const ny = (nextFixed.y - hit.point.y) / nspan;
+                      e.target.position({
+                        x: hit.point.x + nx * inset,
+                        y: hit.point.y + ny * inset,
+                      });
                       setMagnetAt({ x: hit.point.x, y: hit.point.y, kind: hit.kind });
-                      moveWallEndpoint(wall.id, end, raw, { prev });
+                      moveWallEndpoint(wall.id, end, rawTip, { prev });
                     }}
                     onDragEnd={() => {
                       commitWallEndpoint(wall.id, end);
                       endpointSnapPrev.current = null;
                       setMagnetAt(null);
                     }}
-                  />
+                  >
+                    <Rect
+                      x={-grip}
+                      y={-grip}
+                      width={grip * 2}
+                      height={grip * 2}
+                      fill="rgba(196,92,38,0.12)"
+                      stroke="#fff"
+                      strokeWidth={16}
+                      cornerRadius={16}
+                    />
+                    <Rect
+                      x={-grip}
+                      y={-grip}
+                      width={grip * 2}
+                      height={grip * 2}
+                      fillEnabled={false}
+                      stroke="#c45c26"
+                      strokeWidth={12}
+                      cornerRadius={16}
+                    />
+                  </Group>
                 );
               })}
           </Group>

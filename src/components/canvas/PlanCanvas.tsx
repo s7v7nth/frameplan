@@ -264,6 +264,7 @@ export function PlanCanvas() {
           <GridLayer scale={scale} viewCenter={viewCenter} viewSizeMm={viewSizeMm} />
           <WallsLayer
             walls={walls}
+            openings={openings}
             tool={tool}
             selectedId={selectedId}
             spacePan={spacePan}

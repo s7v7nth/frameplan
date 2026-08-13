@@ -67,11 +67,13 @@ export function OpeningsLayer({
               />
             )}
             <Text
-              x={mid.x - 80}
-              y={mid.y - 200}
+              x={mid.x + nx * 0.4 - 50}
+              y={mid.y + ny * 0.4 - 55}
               text={o.type === 'window' ? 'О' : 'Д'}
-              fontSize={160}
-              fill="#0f172a"
+              fontSize={110}
+              fill="#fff7ed"
+              stroke="#0f172a"
+              strokeWidth={8}
               listening={false}
             />
             {selected && tool === 'select' && (

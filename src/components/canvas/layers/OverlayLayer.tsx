@@ -40,47 +40,48 @@ export function OverlayLayer({
   return (
     <Group listening={false}>
       {orthoMarks.map((m, i) => {
-        const c = Math.cos(m.angle);
-        const s = Math.sin(m.angle);
-        const sz = m.size;
-        const p0 = { x: m.x, y: m.y };
-        const p1 = { x: m.x + c * sz, y: m.y + s * sz };
-        const p2 = {
-          x: m.x + c * sz - s * sz,
-          y: m.y + s * sz + c * sz,
-        };
-        const p3 = { x: m.x - s * sz, y: m.y + c * sz };
+        const a = { x: m.x + m.ux * m.size, y: m.y + m.uy * m.size };
+        const b = { x: m.x + m.vx * m.size, y: m.y + m.vy * m.size };
+        const pts = [a.x, a.y, m.x, m.y, b.x, b.y];
         return (
-          <Line
-            key={`ortho-${i}`}
-            points={[p0.x, p0.y, p1.x, p1.y, p2.x, p2.y, p3.x, p3.y]}
-            stroke="#2563eb"
-            strokeWidth={18}
-            opacity={0.85}
-          />
+          <Group key={`ortho-${i}`}>
+            <Line points={pts} stroke="#fff7ed" strokeWidth={56} lineJoin="miter" lineCap="square" />
+            <Line points={pts} stroke="#ea580c" strokeWidth={28} lineJoin="miter" lineCap="square" />
+          </Group>
         );
       })}
 
       {draftOrtho && (
-        <Line
-          points={[
-            draftOrtho.x,
-            draftOrtho.y,
-            draftOrtho.x + Math.cos(draftOrtho.angle) * draftOrtho.size,
-            draftOrtho.y + Math.sin(draftOrtho.angle) * draftOrtho.size,
-            draftOrtho.x +
-              Math.cos(draftOrtho.angle) * draftOrtho.size -
-              Math.sin(draftOrtho.angle) * draftOrtho.size,
-            draftOrtho.y +
-              Math.sin(draftOrtho.angle) * draftOrtho.size +
-              Math.cos(draftOrtho.angle) * draftOrtho.size,
-            draftOrtho.x - Math.sin(draftOrtho.angle) * draftOrtho.size,
-            draftOrtho.y + Math.cos(draftOrtho.angle) * draftOrtho.size,
-          ]}
-          stroke="#2563eb"
-          strokeWidth={22}
-          opacity={0.9}
-        />
+        <Group>
+          <Line
+            points={[
+              draftOrtho.x + Math.cos(draftOrtho.angle) * draftOrtho.size,
+              draftOrtho.y + Math.sin(draftOrtho.angle) * draftOrtho.size,
+              draftOrtho.x,
+              draftOrtho.y,
+              draftOrtho.x - Math.sin(draftOrtho.angle) * draftOrtho.size,
+              draftOrtho.y + Math.cos(draftOrtho.angle) * draftOrtho.size,
+            ]}
+            stroke="#fff7ed"
+            strokeWidth={56}
+            lineJoin="miter"
+            lineCap="square"
+          />
+          <Line
+            points={[
+              draftOrtho.x + Math.cos(draftOrtho.angle) * draftOrtho.size,
+              draftOrtho.y + Math.sin(draftOrtho.angle) * draftOrtho.size,
+              draftOrtho.x,
+              draftOrtho.y,
+              draftOrtho.x - Math.sin(draftOrtho.angle) * draftOrtho.size,
+              draftOrtho.y + Math.cos(draftOrtho.angle) * draftOrtho.size,
+            ]}
+            stroke="#ea580c"
+            strokeWidth={28}
+            lineJoin="miter"
+            lineCap="square"
+          />
+        </Group>
       )}
 
       {magnetAt && (tool === 'wall' || tool === 'select' || tool === 'measure') && (

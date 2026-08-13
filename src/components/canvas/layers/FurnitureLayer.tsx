@@ -1,4 +1,5 @@
 import { Rect, Text, Group } from 'react-konva';
+import { EDIT_GRID_MM, snapPoint } from '../../../domain/geometry';
 import type { FurnitureItem, Tool } from '../../../domain/types';
 import { useEditorStore } from '../../../store/editorStore';
 
@@ -27,6 +28,10 @@ export function FurnitureLayer({ furniture, tool, selectedId, spacePan, panning 
           onDragStart={() => {
             checkpoint();
             select(f.id);
+          }}
+          onDragMove={(e) => {
+            const snapped = snapPoint({ x: e.target.x(), y: e.target.y() }, EDIT_GRID_MM);
+            e.target.position(snapped);
           }}
           onDragEnd={(e) => moveFurniture(f.id, e.target.x(), e.target.y())}
           onMouseDown={(e) => {

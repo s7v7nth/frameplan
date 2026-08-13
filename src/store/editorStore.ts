@@ -11,7 +11,7 @@ import {
   finalizeWallJoins,
   commitEndpointJoin,
   resolveTranslateSnap,
-  snapGridForScale,
+  EDIT_GRID_MM,
   type MagnetHit,
 } from '../domain/geometry';
 import type {
@@ -443,8 +443,7 @@ export const useEditorStore = create<EditorState>()(
       },
       moveFurniture: (id, x, y) =>
         set((s) => {
-          const g = snapGridForScale(s.scale);
-          const snapped = snapPoint({ x, y }, g);
+          const snapped = snapPoint({ x, y }, EDIT_GRID_MM);
           return {
             project: touch({
               ...s.project,

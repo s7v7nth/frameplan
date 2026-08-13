@@ -1,4 +1,4 @@
-import type { Point, Wall } from './types';
+import type { Opening, Point, Wall } from './types';
 
 export function dist(a: Point, b: Point): number {
   return Math.hypot(b.x - a.x, b.y - a.y);
@@ -24,6 +24,8 @@ export function pointAlongWall(wall: Wall, offsetMm: number): Point {
 
 /** Base grid when zoom is unknown. Prefer `gridStepForScale`. */
 export const GRID_MM = 100;
+/** Object / free-tip edit snap — 1 cm, so you cannot miss by a pixel. */
+export const EDIT_GRID_MM = 10;
 
 const GRID_STEPS_MM = [10, 20, 25, 50, 100, 200, 250, 500] as const;
 
@@ -409,12 +411,9 @@ export function resolveDraftSnap(
   let cursor = raw;
   if (useOrtho && opts.from) cursor = orthoSnapFrom(opts.from, cursor, radii.ortho);
   // Optional explicit grid (tests / callers). Default: continuous 1 mm free motion.
-  if (opts.grid != null) {
-    const gridPt = snapPoint(cursor, opts.grid);
-    return { point: gridPt, kind: 'grid', strength: dist(p, gridPt) };
-  }
-  const free = roundMm(cursor);
-  return { point: free, kind: 'grid', strength: dist(p, free) };
+  const step = opts.grid ?? EDIT_GRID_MM;
+  const gridPt = snapPoint(cursor, step);
+  return { point: gridPt, kind: 'grid', strength: dist(p, gridPt) };
 }
 
 /** @deprecated use resolveDraftSnap — kept for callers/tests */
@@ -787,9 +786,12 @@ export function resolveTranslateSnap(
   const dragLen = Math.hypot(dx, dy);
   const dragU = dragLen > 1 ? { x: dx / dragLen, y: dy / dragLen } : { x: 0, y: 0 };
 
-  // Base: continuous translation (1 mm). Magnets override when near hosts.
-  let adx = Math.round(dx);
-  let ady = Math.round(dy);
+  // Base: 1 cm grid. Magnets override when near hosts.
+  const grid = opts.grid ?? EDIT_GRID_MM;
+  const rawA = { x: wall.a.x + dx, y: wall.a.y + dy };
+  const snappedA = snapPoint(rawA, grid);
+  let adx = snappedA.x - wall.a.x;
+  let ady = snappedA.y - wall.a.y;
 
   type Cand = { dx: number; dy: number; dist: number; kind: MagnetKind };
   const cands: Cand[] = [];
@@ -852,12 +854,13 @@ export function resolveTranslateSnap(
   return { dx: adx, dy: ady, kind, ok };
 }
 
-/** Right-angle markers at L-corners (~90°) for canvas feedback. */
+/** Right-angle L marks at interior of ~90° corners. */
 export function orthoCornerMarkers(
   walls: Wall[],
   floor: number,
-): { x: number; y: number; angle: number; size: number }[] {
-  const out: { x: number; y: number; angle: number; size: number }[] = [];
+): { x: number; y: number; ux: number; uy: number; vx: number; vy: number; size: number }[] {
+  const out: { x: number; y: number; ux: number; uy: number; vx: number; vy: number; size: number }[] =
+    [];
   const floorWalls = walls.filter((w) => w.floor === floor);
   const seen = new Set<string>();
 
@@ -888,20 +891,62 @@ export function orthoCornerMarkers(
           const d0 = dirFromTip(t0, w0);
           const d1 = dirFromTip(t1, w1);
           if (!d0 || !d1) continue;
-          // Outer corner bisector for placing the square
-          const ox = -(d0.x + d1.x);
-          const oy = -(d0.y + d1.y);
-          const olen = Math.hypot(ox, oy) || 1;
-          const size = Math.min(w0.thickness, w1.thickness) * 0.55;
-          const cx = (t0.x + t1.x) / 2 + (ox / olen) * (size * 0.15);
-          const cy = (t0.y + t1.y) / 2 + (oy / olen) * (size * 0.15);
-          const angle = Math.atan2(d0.y, d0.x);
-          out.push({ x: cx, y: cy, angle, size });
+          // Interior of the L (into both walls from the tips)
+          const ix = d0.x + d1.x;
+          const iy = d0.y + d1.y;
+          const ilen = Math.hypot(ix, iy) || 1;
+          const size = Math.max(320, Math.min(w0.thickness, w1.thickness) * 1.8);
+          const inset = Math.max(w0.thickness, w1.thickness) * 0.55 + 40;
+          const cx = (t0.x + t1.x) / 2 + (ix / ilen) * inset;
+          const cy = (t0.y + t1.y) / 2 + (iy / ilen) * inset;
+          out.push({ x: cx, y: cy, ux: d0.x, uy: d0.y, vx: d1.x, vy: d1.y, size });
         }
       }
     }
   }
   return out;
+}
+
+/** Length label outside the wall body, shifted off openings. */
+export function wallLengthLabelPose(
+  wall: Wall,
+  openings: Pick<Opening, 'wallId' | 'offset' | 'width'>[] = [],
+): { x: number; y: number; rotationDeg: number; text: string } {
+  const len = wallLength(wall);
+  const ang = wallAngle(wall);
+  let alongMm = len / 2;
+  const own = openings.filter((o) => o.wallId === wall.id);
+  const covered = (mm: number) =>
+    own.some((o) => mm >= o.offset - 80 && mm <= o.offset + o.width + 80);
+  if (own.length && covered(alongMm)) {
+    const cuts = [0, ...own.flatMap((o) => [o.offset, o.offset + o.width]), len].sort(
+      (a, b) => a - b,
+    );
+    let bestStart = 0;
+    let bestEnd = len;
+    let bestSpan = -1;
+    for (let i = 0; i < cuts.length - 1; i++) {
+      const span = cuts[i + 1] - cuts[i];
+      const mid = (cuts[i] + cuts[i + 1]) / 2;
+      if (span > bestSpan && !covered(mid)) {
+        bestSpan = span;
+        bestStart = cuts[i];
+        bestEnd = cuts[i + 1];
+      }
+    }
+    alongMm = (bestStart + bestEnd) / 2;
+  }
+  const along = pointAlongWall(wall, alongMm);
+  const n = { x: -Math.sin(ang), y: Math.cos(ang) };
+  const off = wall.thickness / 2 + 200;
+  let rotationDeg = (ang * 180) / Math.PI;
+  if (rotationDeg > 90 || rotationDeg < -90) rotationDeg += 180;
+  return {
+    x: along.x + n.x * off,
+    y: along.y + n.y * off,
+    rotationDeg,
+    text: `${(len / 1000).toFixed(2)} м`,
+  };
 }
 
 /** Draft-time ortho indicator at the start tip when the segment is H/V locked. */

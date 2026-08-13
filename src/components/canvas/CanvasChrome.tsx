@@ -94,7 +94,7 @@ export function CanvasChrome({
 
       <div className="canvas-statusbar">
         <span>build {APP_BUILD}</span>
-        <span>сетка {gridMm} мм</span>
+        <span>сетка {gridMm} мм · шаг 10 мм</span>
         {draftLengthM != null && <span className="accent">стена {draftLengthM.toFixed(2)} м</span>}
         {measureLengthM != null && (
           <span className="accent">рулетка {measureLengthM.toFixed(2)} м</span>

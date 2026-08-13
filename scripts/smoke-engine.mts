@@ -484,11 +484,11 @@ if (gridHit.kind !== 'grid' || gridHit.point.x !== 100 || gridHit.point.y !== 30
 }
 console.log('gridSnap', gridHit.point);
 const freeHit = resolveDraftSnap({ x: 137, y: 262 }, [], { scale: 0.08 });
-if (freeHit.kind !== 'grid' || freeHit.point.x !== 137 || freeHit.point.y !== 262) {
-  console.error('Continuous free snap failed', freeHit);
+if (freeHit.kind !== 'grid' || freeHit.point.x !== 140 || freeHit.point.y !== 260) {
+  console.error('1cm edit snap failed', freeHit);
   process.exit(1);
 }
-console.log('freeSnap', freeHit.point);
+console.log('editSnap', freeHit.point);
 
 // Through + butt polygon at L-corner — no diagonal "triangle in triangle" miter
 const polyWalls = [
