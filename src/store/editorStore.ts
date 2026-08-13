@@ -4,6 +4,7 @@ import { DEFAULT_SETTINGS } from '../domain/materials';
 import {
   projectPointOnSegment,
   snapPoint,
+  snapAxisPoint,
   uid,
   wallLength,
   wallSegmentCollides,
@@ -292,7 +293,7 @@ export const useEditorStore = create<EditorState>()(
         const { project, wallKind, past } = get();
         const walls = project.walls.filter((w) => w.floor === project.activeFloor);
         const selfThickness = wallKind === 'exterior' ? 200 : 120;
-        const end = snapPoint(p, EDIT_GRID_MM);
+        const end = snapAxisPoint(start, p, EDIT_GRID_MM);
         if (Math.hypot(end.x - start.x, end.y - start.y) < 200) {
           return 'too_short';
         }
@@ -442,7 +443,7 @@ export const useEditorStore = create<EditorState>()(
             (w) => w.floor === s.project.activeFloor && w.id !== id,
           );
           const fixed = end === 'a' ? wall.b : wall.a;
-          const p = snapPoint(point, EDIT_GRID_MM);
+          const p = snapAxisPoint(fixed, point, EDIT_GRID_MM);
           if (wallSegmentCollides(fixed, p, others)) {
             return s;
           }
@@ -462,7 +463,7 @@ export const useEditorStore = create<EditorState>()(
           (w) => w.floor === s.project.activeFloor && w.id !== id,
         );
         const fixed = end === 'a' ? wall.b : wall.a;
-        const p = snapPoint(point, EDIT_GRID_MM);
+        const p = snapAxisPoint(fixed, point, EDIT_GRID_MM);
         if (wallSegmentCollides(fixed, p, others)) return wall[end];
         return p;
       },

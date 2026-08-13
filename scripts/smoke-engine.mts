@@ -10,6 +10,7 @@ import {
   commitEndpointJoin,
   detectWallJoints,
   isAxisAligned,
+  snapAxisPoint,
   wallLength,
 } from '../src/domain/geometry';
 import { generateFrameModel } from '../src/engine/frameEngine';
@@ -247,6 +248,14 @@ if (gridOnly.kind !== 'grid' || gridOnly.point.x !== 3010 || gridOnly.point.y !=
   console.error('Grid-only snap failed', gridOnly);
   process.exit(1);
 }
+const axisV = snapAxisPoint({ x: 0, y: 0 }, { x: 80, y: 2000 });
+const axisH = snapAxisPoint({ x: 0, y: 0 }, { x: 2000, y: 90 });
+const axisFree = snapAxisPoint({ x: 0, y: 0 }, { x: 1000, y: 800 });
+if (axisV.x !== 0 || axisV.y !== 2000 || axisH.x !== 2000 || axisH.y !== 0 || axisFree.x !== 1000 || axisFree.y !== 800) {
+  console.error('Axis snap failed', { axisV, axisH, axisFree });
+  process.exit(1);
+}
+console.log('axisSnap', { axisV, axisH, axisFree });
 
 const jointWalls = [
   {

@@ -1,7 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { KonvaEventObject } from 'konva/lib/Node';
 import { Stage, Layer } from 'react-konva';
-import { gridStepForScale, snapPoint, EDIT_GRID_MM, detectWallJoints } from '../../domain/geometry';
+import {
+  gridStepForScale,
+  snapPoint,
+  snapAxisPoint,
+  EDIT_GRID_MM,
+  detectWallJoints,
+} from '../../domain/geometry';
 import type { Point } from '../../domain/types';
 import { useEditorStore } from '../../store/editorStore';
 import { CanvasChrome } from './CanvasChrome';
@@ -104,12 +110,11 @@ export function PlanCanvas() {
 
   const placeWall = useCallback(
     (world: Point) => {
-      const snapped = snapPoint(world, EDIT_GRID_MM);
       if (!draftStart) {
-        beginWall(snapped);
+        beginWall(snapPoint(world, EDIT_GRID_MM));
         return;
       }
-      const result = finishWall(snapped);
+      const result = finishWall(snapAxisPoint(draftStart, world, EDIT_GRID_MM));
       if (result === 'too_short') showToast('Слишком короткий сегмент');
       if (result === 'collision') showToast('Нельзя сюда');
     },
@@ -154,10 +159,9 @@ export function PlanCanvas() {
       return;
     }
     if (tool === 'measure') {
-      const hit = snapPoint(world, EDIT_GRID_MM);
       setMeasure((m) => {
-        if (!m.a || m.b) return { a: hit, b: null };
-        return { a: m.a, b: hit };
+        if (!m.a || m.b) return { a: snapPoint(world, EDIT_GRID_MM), b: null };
+        return { a: m.a, b: snapAxisPoint(m.a, world, EDIT_GRID_MM) };
       });
     }
   };
@@ -207,7 +211,11 @@ export function PlanCanvas() {
           const pos = stage?.getPointerPosition();
           if (!pos) return;
           const world = toWorld(pos.x, pos.y);
-          if (tool === 'wall' || tool === 'measure') {
+          if (tool === 'wall' && draftStart) {
+            setHover(snapAxisPoint(draftStart, world, EDIT_GRID_MM));
+          } else if (tool === 'measure' && measure.a && !measure.b) {
+            setHover(snapAxisPoint(measure.a, world, EDIT_GRID_MM));
+          } else if (tool === 'wall' || tool === 'measure') {
             setHover(snapPoint(world, EDIT_GRID_MM));
           } else {
             setHover(world);

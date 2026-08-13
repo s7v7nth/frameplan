@@ -55,6 +55,39 @@ export function snapPoint(p: Point, grid = GRID_MM): Point {
   };
 }
 
+/** Off-axis distance that locks a segment to H/V (grid-parallel / perpendicular). */
+export const AXIS_SNAP_MM = 120;
+/** Angle from H/V (degrees) that also locks on longer segments. */
+export const AXIS_SNAP_DEG = 5;
+
+/**
+ * 1 cm grid, then magnet to the beam's own H/V if the cursor is close
+ * to horizontal or vertical relative to `from`.
+ */
+export function snapAxisPoint(from: Point, to: Point, grid = EDIT_GRID_MM): Point {
+  const g = snapPoint(to, grid);
+  const dx = g.x - from.x;
+  const dy = g.y - from.y;
+  const len = Math.hypot(dx, dy);
+  if (len < 1) return g;
+
+  const lockV = { x: from.x, y: g.y };
+  const lockH = { x: g.x, y: from.y };
+
+  if (Math.abs(dx) <= AXIS_SNAP_MM && Math.abs(dy) > AXIS_SNAP_MM) return lockV;
+  if (Math.abs(dy) <= AXIS_SNAP_MM && Math.abs(dx) > AXIS_SNAP_MM) return lockH;
+
+  if (len >= 400) {
+    const ang = Math.abs(Math.atan2(dy, dx));
+    const toH = Math.min(ang, Math.PI - ang);
+    const toV = Math.abs(ang - Math.PI / 2);
+    const lim = (AXIS_SNAP_DEG * Math.PI) / 180;
+    if (toH <= toV && toH < lim) return lockH;
+    if (toV < lim) return lockV;
+  }
+  return g;
+}
+
 export const AXIS_ALIGN_EPS_MM = 1;
 /** Max gap between a tip and another wall to count as a joint. */
 export const JOINT_GAP_MM = 160;
@@ -340,7 +373,7 @@ function dockPointOnFace(
   return roundMm(pt);
 }
 
-/** Edit snap is 1 cm grid only — no face/tip magnet. */
+/** Edit snap: 1 cm grid, plus H/V axis lock when `from` is set. */
 export function resolveDraftSnap(
   p: Point,
   _walls: Wall[] = [],
@@ -355,8 +388,8 @@ export function resolveDraftSnap(
   } = {},
 ): MagnetHit {
   const step = opts.grid ?? EDIT_GRID_MM;
-  const gridPt = snapPoint(p, step);
-  return { point: gridPt, kind: 'grid', strength: dist(p, gridPt) };
+  const point = opts.from ? snapAxisPoint(opts.from, p, step) : snapPoint(p, step);
+  return { point, kind: 'grid', strength: dist(p, point) };
 }
 
 /** @deprecated use resolveDraftSnap — kept for callers/tests */
