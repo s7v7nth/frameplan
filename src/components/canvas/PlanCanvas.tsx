@@ -1,11 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { KonvaEventObject } from 'konva/lib/Node';
 import { Stage, Layer } from 'react-konva';
-import {
-  resolveDraftSnap,
-  gridStepForScale,
-  type MagnetHit,
-} from '../../domain/geometry';
+import { gridStepForScale, snapPoint, EDIT_GRID_MM, detectWallJoints } from '../../domain/geometry';
 import type { Point } from '../../domain/types';
 import { useEditorStore } from '../../store/editorStore';
 import { CanvasChrome } from './CanvasChrome';
@@ -16,7 +12,7 @@ import { WallsLayer } from './layers/WallsLayer';
 import { OpeningsLayer } from './layers/OpeningsLayer';
 import { FurnitureLayer } from './layers/FurnitureLayer';
 import { OverlayLayer } from './layers/OverlayLayer';
-import type { MagnetFeedback, MeasureDraft } from './interaction/types';
+import type { MeasureDraft } from './interaction/types';
 
 export function PlanCanvas() {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -28,13 +24,11 @@ export function PlanCanvas() {
     lastDy: 0,
     invalid: false,
   });
-  const snapPrevRef = useRef<MagnetHit | null>(null);
   const toastTimer = useRef<number | null>(null);
 
   const [dragInvalid, setDragInvalid] = useState(false);
   const [dragRejectFlash, setDragRejectFlash] = useState(false);
   const [hover, setHover] = useState<Point | null>(null);
-  const [magnetAt, setMagnetAt] = useState<MagnetFeedback | null>(null);
   const [toast, setToast] = useState<string | null>(null);
   const [measure, setMeasure] = useState<MeasureDraft>({ a: null, b: null });
 
@@ -42,7 +36,6 @@ export function PlanCanvas() {
   const tool = useEditorStore((s) => s.tool);
   const selectedId = useEditorStore((s) => s.selectedId);
   const draftStart = useEditorStore((s) => s.draftStart);
-  const wallKind = useEditorStore((s) => s.wallKind);
   const select = useEditorStore((s) => s.select);
   const beginWall = useEditorStore((s) => s.beginWall);
   const finishWall = useEditorStore((s) => s.finishWall);
@@ -75,12 +68,6 @@ export function PlanCanvas() {
 
   useCanvasHotkeys({ setSpacePan, fit, onCancelMeasure });
 
-  const draftThickness = wallKind === 'exterior' ? 200 : 120;
-
-  useEffect(() => {
-    snapPrevRef.current = null;
-  }, [tool, draftStart]);
-
   useEffect(() => {
     setMeasure({ a: null, b: null });
   }, [tool]);
@@ -96,6 +83,10 @@ export function PlanCanvas() {
   const openings = useMemo(
     () => project.openings.filter((o) => walls.some((w) => w.id === o.wallId)),
     [project.openings, walls],
+  );
+  const joints = useMemo(
+    () => detectWallJoints(project.walls, project.activeFloor),
+    [project.walls, project.activeFloor],
   );
 
   const gridMm = gridStepForScale(scale);
@@ -113,20 +104,16 @@ export function PlanCanvas() {
 
   const placeWall = useCallback(
     (world: Point) => {
+      const snapped = snapPoint(world, EDIT_GRID_MM);
       if (!draftStart) {
-        beginWall(world);
+        beginWall(snapped);
         return;
       }
-      const snapped = resolveDraftSnap(world, walls, {
-        from: draftStart,
-        scale,
-        selfThickness: draftThickness,
-      }).point;
       const result = finishWall(snapped);
       if (result === 'too_short') showToast('Слишком короткий сегмент');
       if (result === 'collision') showToast('Нельзя сюда');
     },
-    [draftStart, beginWall, finishWall, walls, scale, draftThickness, showToast],
+    [draftStart, beginWall, finishWall, showToast],
   );
 
   const onStageMouseDown = (e: KonvaEventObject<MouseEvent>) => {
@@ -167,7 +154,7 @@ export function PlanCanvas() {
       return;
     }
     if (tool === 'measure') {
-      const hit = resolveDraftSnap(world, walls, { scale }).point;
+      const hit = snapPoint(world, EDIT_GRID_MM);
       setMeasure((m) => {
         if (!m.a || m.b) return { a: hit, b: null };
         return { a: m.a, b: hit };
@@ -203,6 +190,7 @@ export function PlanCanvas() {
         gridMm={gridMm}
         draftLengthM={draftLengthM}
         measureLengthM={measureLengthM}
+        jointCount={joints.length}
         toast={toast}
         onZoomIn={() => zoomBy(1.15)}
         onZoomOut={() => zoomBy(1 / 1.15)}
@@ -219,28 +207,10 @@ export function PlanCanvas() {
           const pos = stage?.getPointerPosition();
           if (!pos) return;
           const world = toWorld(pos.x, pos.y);
-          if (tool === 'wall') {
-            const hit = resolveDraftSnap(world, walls, {
-              from: draftStart ?? undefined,
-              prev: snapPrevRef.current,
-              scale,
-              selfThickness: draftThickness,
-            });
-            snapPrevRef.current = hit;
-            setHover(hit.point);
-            setMagnetAt({ x: hit.point.x, y: hit.point.y, kind: hit.kind });
-          } else if (tool === 'measure') {
-            const hit = resolveDraftSnap(world, walls, {
-              prev: snapPrevRef.current,
-              scale,
-            });
-            snapPrevRef.current = hit;
-            setHover(hit.point);
-            setMagnetAt({ x: hit.point.x, y: hit.point.y, kind: hit.kind });
+          if (tool === 'wall' || tool === 'measure') {
+            setHover(snapPoint(world, EDIT_GRID_MM));
           } else {
-            snapPrevRef.current = null;
             setHover(world);
-            setMagnetAt(null);
           }
         }}
         onWheel={(e) => {
@@ -275,7 +245,6 @@ export function PlanCanvas() {
             wallDragRef={wallDragRef}
             setDragInvalid={setDragInvalid}
             setDragRejectFlash={setDragRejectFlash}
-            setMagnetAt={setMagnetAt}
             showToast={showToast}
             onWallPlace={placeWall}
           />
@@ -300,7 +269,6 @@ export function PlanCanvas() {
             tool={tool}
             draftStart={draftStart}
             hover={hover}
-            magnetAt={magnetAt}
             measure={measure}
           />
         </Layer>

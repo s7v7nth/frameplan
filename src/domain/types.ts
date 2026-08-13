@@ -119,6 +119,19 @@ export interface Project {
   updatedAt: string;
 }
 
+/** Detected right-angle wall contact — input for later corner/joint generation. */
+export type WallJointKind = 'L' | 'T';
+
+export interface WallJoint {
+  id: string;
+  kind: WallJointKind;
+  floor: FloorLevel;
+  wallIds: [string, string];
+  /** Which end of each wall participates; `span` = T-butt on the face. */
+  ends: { wallId: string; end: 'a' | 'b' | 'span' }[];
+  point: Point;
+}
+
 export interface LumberPiece {
   id: string;
   category:

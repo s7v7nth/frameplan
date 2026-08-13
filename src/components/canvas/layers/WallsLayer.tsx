@@ -3,12 +3,10 @@ import {
   wallPolygonPoints,
   wallCenterlinePoints,
   wallLengthLabelPose,
-  type MagnetHit,
+  isAxisAligned,
 } from '../../../domain/geometry';
 import type { Opening, Point, Tool, Wall } from '../../../domain/types';
 import { useEditorStore } from '../../../store/editorStore';
-import type { MagnetFeedback } from '../interaction/types';
-import { useRef } from 'react';
 
 type Props = {
   walls: Wall[];
@@ -30,7 +28,6 @@ type Props = {
   }>;
   setDragInvalid: (v: boolean) => void;
   setDragRejectFlash: (v: boolean) => void;
-  setMagnetAt: (m: MagnetFeedback | null) => void;
   showToast: (msg: string) => void;
   onWallPlace: (world: Point) => void;
 };
@@ -48,7 +45,6 @@ export function WallsLayer({
   wallDragRef,
   setDragInvalid,
   setDragRejectFlash,
-  setMagnetAt,
   showToast,
   onWallPlace,
 }: Props) {
@@ -59,8 +55,6 @@ export function WallsLayer({
   const moveWallEndpoint = useEditorStore((s) => s.moveWallEndpoint);
   const previewEndpointSnap = useEditorStore((s) => s.previewEndpointSnap);
   const checkpoint = useEditorStore((s) => s.checkpoint);
-  const commitWallEndpoint = useEditorStore((s) => s.commitWallEndpoint);
-  const endpointSnapPrev = useRef<MagnetHit | null>(null);
 
   const placeFromEvent = (e: { target: { getStage: () => { getPointerPosition: () => { x: number; y: number } | null } | null } }) => {
     const stage = e.target.getStage();
@@ -78,6 +72,7 @@ export function WallsLayer({
     <>
       {walls.map((wall) => {
         const selected = selectedId === wall.id;
+        const axis = isAxisAligned(wall);
         const poly = wallPolygonPoints(wall, walls);
         const fill =
           selected && (dragInvalid || dragRejectFlash)
@@ -92,9 +87,11 @@ export function WallsLayer({
             ? '#991b1b'
             : selected
               ? '#9a3412'
-              : wall.kind === 'exterior'
-                ? '#14231c'
-                : '#475569';
+              : axis
+                ? '#0d9488'
+                : wall.kind === 'exterior'
+                  ? '#14231c'
+                  : '#475569';
         const center = wallCenterlinePoints(wall, walls);
         return (
           <Group key={wall.id}>
@@ -103,7 +100,7 @@ export function WallsLayer({
               closed
               fill={fill}
               stroke={stroke}
-              strokeWidth={selected ? 10 : 3}
+              strokeWidth={selected ? 10 : axis ? 16 : 3}
               lineJoin="miter"
               miterLimit={2}
               perfectDrawEnabled={false}
@@ -136,15 +133,7 @@ export function WallsLayer({
                     x: wallDragRef.current.x + preview.dx,
                     y: wallDragRef.current.y + preview.dy,
                   });
-                  if (preview.kind !== 'grid') {
-                    setMagnetAt({
-                      x: wall.a.x + preview.dx,
-                      y: wall.a.y + preview.dy,
-                      kind: preview.kind as MagnetHit['kind'],
-                    });
-                  } else {
-                    setMagnetAt(null);
-                  }
+                  // grid-only translate — no magnet feedback
                 } else {
                   wallDragRef.current.invalid = true;
                   setDragInvalid(true);
@@ -152,7 +141,6 @@ export function WallsLayer({
                     x: wallDragRef.current.x + wallDragRef.current.lastDx,
                     y: wallDragRef.current.y + wallDragRef.current.lastDy,
                   });
-                  setMagnetAt(null);
                 }
               }}
               onDragEnd={(e) => {
@@ -160,7 +148,6 @@ export function WallsLayer({
                 const dy = wallDragRef.current.lastDy;
                 const attemptedInvalid = wallDragRef.current.invalid;
                 e.target.position({ x: 0, y: 0 });
-                setMagnetAt(null);
                 setDragInvalid(false);
                 if (Math.hypot(dx, dy) <= 1) {
                   if (attemptedInvalid) {
@@ -252,7 +239,6 @@ export function WallsLayer({
                     }}
                     onDragStart={() => {
                       checkpoint();
-                      endpointSnapPrev.current = null;
                     }}
                     onDragMove={(e) => {
                       e.cancelBubble = true;
@@ -261,25 +247,20 @@ export function WallsLayer({
                         x: handle.x - ux * inset,
                         y: handle.y - uy * inset,
                       };
-                      const prev = endpointSnapPrev.current;
-                      const hit = previewEndpointSnap(wall.id, end, rawTip, { prev });
-                      endpointSnapPrev.current = hit;
+                      const snapped = previewEndpointSnap(wall.id, end, rawTip);
                       const nextFixed = end === 'a' ? wall.b : wall.a;
                       const nspan =
-                        Math.hypot(nextFixed.x - hit.point.x, nextFixed.y - hit.point.y) || 1;
-                      const nx = (nextFixed.x - hit.point.x) / nspan;
-                      const ny = (nextFixed.y - hit.point.y) / nspan;
+                        Math.hypot(nextFixed.x - snapped.x, nextFixed.y - snapped.y) || 1;
+                      const nx = (nextFixed.x - snapped.x) / nspan;
+                      const ny = (nextFixed.y - snapped.y) / nspan;
                       e.target.position({
-                        x: hit.point.x + nx * inset,
-                        y: hit.point.y + ny * inset,
+                        x: snapped.x + nx * inset,
+                        y: snapped.y + ny * inset,
                       });
-                      setMagnetAt({ x: hit.point.x, y: hit.point.y, kind: hit.kind });
-                      moveWallEndpoint(wall.id, end, rawTip, { prev });
+                      moveWallEndpoint(wall.id, end, rawTip);
                     }}
                     onDragEnd={() => {
-                      commitWallEndpoint(wall.id, end);
-                      endpointSnapPrev.current = null;
-                      setMagnetAt(null);
+                      /* grid snap already applied live */
                     }}
                   >
                     <Rect

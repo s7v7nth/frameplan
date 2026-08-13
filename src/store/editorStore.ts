@@ -6,13 +6,9 @@ import {
   snapPoint,
   uid,
   wallLength,
-  resolveDraftSnap,
   wallSegmentCollides,
-  finalizeWallJoins,
-  commitEndpointJoin,
   resolveTranslateSnap,
   EDIT_GRID_MM,
-  type MagnetHit,
 } from '../domain/geometry';
 import type {
   FloorLevel,
@@ -108,14 +104,7 @@ interface EditorState {
   addFurniture: (kind: string) => void;
   moveFurniture: (id: string, x: number, y: number) => void;
   rotateFurniture: (id: string, deltaDeg: number) => void;
-  moveWallEndpoint: (
-    id: string,
-    end: 'a' | 'b',
-    point: Point,
-    opts?: { prev?: MagnetHit | null },
-  ) => void;
-  /** Run join cleanup once after endpoint drag ends. */
-  commitWallEndpoint: (id: string, end: 'a' | 'b') => void;
+  moveWallEndpoint: (id: string, end: 'a' | 'b', point: Point) => void;
   /** Returns false when move rejected (collision). */
   moveWallBy: (id: string, dx: number, dy: number) => boolean;
   /** Preview rigid translate — for live drag feedback. */
@@ -124,13 +113,7 @@ interface EditorState {
     dx: number,
     dy: number,
   ) => { dx: number; dy: number; ok: boolean; kind: string };
-  /** Snapped tip + magnet kind for UI feedback while dragging */
-  previewEndpointSnap: (
-    id: string,
-    end: 'a' | 'b',
-    point: Point,
-    opts?: { prev?: MagnetHit | null },
-  ) => MagnetHit;
+  previewEndpointSnap: (id: string, end: 'a' | 'b', point: Point) => Point;
   moveOpening: (id: string, offset: number) => void;
   resetDemo: () => void;
   copyFloorPlan: (from: FloorLevel, to: FloorLevel) => void;
@@ -300,33 +283,21 @@ export const useEditorStore = create<EditorState>()(
         });
       },
       beginWall: (p) => {
-        const { project, scale, wallKind } = get();
-        const walls = project.walls.filter((w) => w.floor === project.activeFloor);
-        const selfThickness = wallKind === 'exterior' ? 200 : 120;
-        const hit = resolveDraftSnap(p, walls, { scale, selfThickness });
-        set({ draftStart: hit.point });
+        set({ draftStart: snapPoint(p, EDIT_GRID_MM) });
       },
       cancelDraft: () => set({ draftStart: null }),
       finishWall: (p) => {
         const start = get().draftStart;
         if (!start) return 'none';
-        const { project, wallKind, scale, past } = get();
+        const { project, wallKind, past } = get();
         const walls = project.walls.filter((w) => w.floor === project.activeFloor);
         const selfThickness = wallKind === 'exterior' ? 200 : 120;
-        let end = resolveDraftSnap(p, walls, { from: start, scale, selfThickness }).point;
+        const end = snapPoint(p, EDIT_GRID_MM);
         if (Math.hypot(end.x - start.x, end.y - start.y) < 200) {
           return 'too_short';
         }
         if (wallSegmentCollides(start, end, walls)) {
-          const retry = resolveDraftSnap(p, walls, { from: start, scale, selfThickness });
-          if (
-            (retry.kind === 'endpoint' || retry.kind === 'endface' || retry.kind === 'face') &&
-            !wallSegmentCollides(start, retry.point, walls)
-          ) {
-            end = retry.point;
-          } else {
-            return 'collision';
-          }
+          return 'collision';
         }
         const wall: Wall = {
           id: uid('wall'),
@@ -337,16 +308,12 @@ export const useEditorStore = create<EditorState>()(
           height: project.settings.floorHeightMm,
           floor: project.activeFloor,
         };
-        const joined = finalizeWallJoins([...project.walls, wall], project.activeFloor, {
-          mutableWallIds: [wall.id],
-        });
         set({
           past: pushPast(past, project),
           future: [],
-          // Chain: next segment starts from this end
           draftStart: end,
           selectedId: wall.id,
-          project: touch({ ...project, walls: joined }),
+          project: touch({ ...project, walls: [...project.walls, wall] }),
         });
         return 'ok';
       },
@@ -467,7 +434,7 @@ export const useEditorStore = create<EditorState>()(
           }),
         });
       },
-      moveWallEndpoint: (id, end, point, opts) =>
+      moveWallEndpoint: (id, end, point) =>
         set((s) => {
           const wall = s.project.walls.find((w) => w.id === id);
           if (!wall) return s;
@@ -475,20 +442,11 @@ export const useEditorStore = create<EditorState>()(
             (w) => w.floor === s.project.activeFloor && w.id !== id,
           );
           const fixed = end === 'a' ? wall.b : wall.a;
-          const hit = resolveDraftSnap(point, others, {
-            ignoreWallId: id,
-            from: fixed,
-            scale: s.scale,
-            selfThickness: wall.thickness,
-            prev: opts?.prev,
-            ortho: true,
-          });
-          const p = hit.point;
+          const p = snapPoint(point, EDIT_GRID_MM);
           if (wallSegmentCollides(fixed, p, others)) {
             return s;
           }
           if (Math.hypot(p.x - fixed.x, p.y - fixed.y) < 200) return s;
-          // Live drag: only the tip — joins run on commitWallEndpoint
           return {
             project: touch({
               ...s.project,
@@ -496,37 +454,17 @@ export const useEditorStore = create<EditorState>()(
             }),
           };
         }),
-      commitWallEndpoint: (id, end) =>
-        set((s) => {
-          const wall = s.project.walls.find((w) => w.id === id);
-          if (!wall) return s;
-          return {
-            project: touch({
-              ...s.project,
-              walls: commitEndpointJoin(s.project.walls, s.project.activeFloor, id, end),
-            }),
-          };
-        }),
-      previewEndpointSnap: (id, end, point, opts) => {
+      previewEndpointSnap: (id, end, point) => {
         const s = get();
         const wall = s.project.walls.find((w) => w.id === id);
-        if (!wall) return { point, kind: 'grid' as const, strength: 0 };
+        if (!wall) return point;
         const others = s.project.walls.filter(
           (w) => w.floor === s.project.activeFloor && w.id !== id,
         );
         const fixed = end === 'a' ? wall.b : wall.a;
-        const hit = resolveDraftSnap(point, others, {
-          ignoreWallId: id,
-          from: fixed,
-          scale: s.scale,
-          selfThickness: wall.thickness,
-          prev: opts?.prev,
-          ortho: true,
-        });
-        if (wallSegmentCollides(fixed, hit.point, others)) {
-          return { point: wall[end], kind: 'grid' as const, strength: 0 };
-        }
-        return hit;
+        const p = snapPoint(point, EDIT_GRID_MM);
+        if (wallSegmentCollides(fixed, p, others)) return wall[end];
+        return p;
       },
       previewMoveWallBy: (id, dx, dy) => {
         const s = get();

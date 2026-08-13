@@ -11,12 +11,6 @@ export const CANVAS_TOOLS: { id: CanvasTool; label: string; hint: string; key: s
   { id: 'measure', label: 'Рулетка', hint: 'Два клика · длина', key: 'M' },
 ];
 
-export type MagnetFeedback = {
-  x: number;
-  y: number;
-  kind: 'endpoint' | 'face' | 'endface' | 'grid' | 'ortho' | string;
-};
-
 export type MeasureDraft = {
   a: { x: number; y: number } | null;
   b: { x: number; y: number } | null;

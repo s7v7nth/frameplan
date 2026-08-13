@@ -1,6 +1,5 @@
 import { DEFAULT_SETTINGS } from '../src/domain/materials';
 import {
-  magnetSnapPoint,
   weldWallEndpoints,
   wallPolygonPoints,
   resolveDraftSnap,
@@ -9,6 +8,8 @@ import {
   snapGridForScale,
   finalizeWallJoins,
   commitEndpointJoin,
+  detectWallJoints,
+  isAxisAligned,
   wallLength,
 } from '../src/domain/geometry';
 import { generateFrameModel } from '../src/engine/frameEngine';
@@ -240,99 +241,54 @@ if (
   process.exit(1);
 }
 
-// —— Magnet: грань/торец (not centerline); tip-to-tip only when sticky/forced ——
-const existing = [
+// —— Grid snap only (no magnet) + right-angle joint detection ——
+const gridOnly = resolveDraftSnap({ x: 3013, y: 87 }, [], { scale: 0.08 });
+if (gridOnly.kind !== 'grid' || gridOnly.point.x !== 3010 || gridOnly.point.y !== 90) {
+  console.error('Grid-only snap failed', gridOnly);
+  process.exit(1);
+}
+
+const jointWalls = [
   {
     id: 'h',
-    a: { x: 0, y: 0 },
-    b: { x: 6000, y: 0 },
+    a: { x: 0, y: 100 },
+    b: { x: 8000, y: 100 },
     thickness: 200,
     kind: 'exterior' as const,
     height: 2700,
     floor: 0 as const,
   },
+  {
+    id: 'v',
+    a: { x: 7900, y: 200 },
+    b: { x: 7900, y: 5800 },
+    thickness: 200,
+    kind: 'exterior' as const,
+    height: 2700,
+    floor: 0 as const,
+  },
+  {
+    id: 't',
+    a: { x: 4000, y: 200 },
+    b: { x: 4000, y: 5800 },
+    thickness: 120,
+    kind: 'interior' as const,
+    height: 2700,
+    floor: 0 as const,
+  },
 ];
-
-// Mid-span approach → long face at y=±100, not centerline y=0
-const midApproach = { x: 3000, y: 80 };
-const midHit = magnetSnapPoint(midApproach, existing, { freeWhenFar: true, selfThickness: 200 });
-// Along face away from tips
-const alongFace = { x: 1200, y: 80 };
-const faceHit = magnetSnapPoint(alongFace, existing, { freeWhenFar: true, selfThickness: 200 });
-// Near end → торец (endface), not axis tip
-const nearEnd = { x: 40, y: 30 };
-const endHit = magnetSnapPoint(nearEnd, existing, { freeWhenFar: true, selfThickness: 200 });
-// Far from wall → grid
-const farAway = { x: 900, y: 900 };
-const farHit = magnetSnapPoint(farAway, existing, { freeWhenFar: true });
-
-// Hysteresis: once on tip, stay while inside tip release radius
-const sticky = resolveDraftSnap({ x: 80, y: 80 }, existing, {
-  prev: { point: { x: 0, y: 0 }, kind: 'endpoint', wallId: 'h', strength: 50 },
-});
-if (sticky.kind !== 'endpoint' || sticky.point.x !== 0 || sticky.point.y !== 0) {
-  console.error('Sticky tip lock failed', sticky);
+if (!isAxisAligned(jointWalls[0]) || !isAxisAligned(jointWalls[1])) {
+  console.error('Axis align failed');
   process.exit(1);
 }
-const stickyRelease = resolveDraftSnap({ x: 400, y: 400 }, existing, {
-  prev: { point: { x: 0, y: 0 }, kind: 'endpoint', wallId: 'h', strength: 50 },
-});
-if (stickyRelease.kind === 'endpoint' && stickyRelease.point.x === 0 && stickyRelease.point.y === 0) {
-  console.error('Sticky tip should release when far', stickyRelease);
+const joints = detectWallJoints(jointWalls, 0);
+const lCount = joints.filter((j) => j.kind === 'L').length;
+const tCount = joints.filter((j) => j.kind === 'T').length;
+if (lCount < 1 || tCount < 1) {
+  console.error('Joint detect failed', joints);
   process.exit(1);
 }
-
-// Sticky face lock stays on face
-const stickyFace = resolveDraftSnap({ x: 3010, y: 130 }, existing, {
-  prev: { point: { x: 3000, y: 100 }, kind: 'face', wallId: 'h', strength: 20 },
-  selfThickness: 200,
-});
-if (stickyFace.kind !== 'face' || Math.abs(stickyFace.point.y) - 100 > 1) {
-  console.error('Sticky face lock failed', stickyFace);
-  process.exit(1);
-}
-
-const magnetReport = {
-  midKind: midHit.kind,
-  midAt: midHit.point,
-  faceKind: faceHit.kind,
-  faceAt: faceHit.point,
-  endKind: endHit.kind,
-  endAt: endHit.point,
-  farKind: farHit.kind,
-  farAt: farHit.point,
-};
-
-console.log('magnet', JSON.stringify(magnetReport, null, 2));
-
-if (
-  midHit.kind !== 'face' ||
-  Math.abs(midHit.point.x - 3000) > 1 ||
-  Math.abs(Math.abs(midHit.point.y) - 100) > 1 ||
-  faceHit.kind !== 'face' ||
-  Math.abs(Math.abs(faceHit.point.y) - 100) > 1 ||
-  endHit.kind !== 'endface' ||
-  Math.abs(endHit.point.x) > 1 ||
-  farHit.kind !== 'grid'
-) {
-  console.error('Magnet smoke failed', magnetReport);
-  process.exit(1);
-}
-
-// Face dock must be continuous (not 200 mm grid jumps) at typical zoom
-const contA = resolveDraftSnap({ x: 3010, y: 90 }, existing, { scale: 0.08, selfThickness: 200 });
-const contB = resolveDraftSnap({ x: 3040, y: 90 }, existing, { scale: 0.08, selfThickness: 200 });
-if (
-  contA.kind !== 'face' ||
-  contB.kind !== 'face' ||
-  Math.abs(contA.point.x - 3010) > 1 ||
-  Math.abs(contB.point.x - 3040) > 1 ||
-  Math.abs(contB.point.x - contA.point.x - 30) > 1
-) {
-  console.error('Continuous face snap failed', { contA, contB });
-  process.exit(1);
-}
-console.log('faceContinuous', { a: contA.point, b: contB.point, dx: contB.point.x - contA.point.x });
+console.log('joints', { lCount, tCount, n: joints.length });
 
 const fineGrid = snapGridForScale(0.08);
 if (fineGrid > 50) {

@@ -1,4 +1,4 @@
-import type { Opening, Point, Wall } from './types';
+import type { FloorLevel, Opening, Point, Wall, WallJoint } from './types';
 
 export function dist(a: Point, b: Point): number {
   return Math.hypot(b.x - a.x, b.y - a.y);
@@ -53,6 +53,101 @@ export function snapPoint(p: Point, grid = GRID_MM): Point {
     x: Math.round(p.x / grid) * grid,
     y: Math.round(p.y / grid) * grid,
   };
+}
+
+export const AXIS_ALIGN_EPS_MM = 1;
+/** Max gap between a tip and another wall to count as a joint. */
+export const JOINT_GAP_MM = 160;
+
+export function isAxisAligned(wall: Wall, eps = AXIS_ALIGN_EPS_MM): boolean {
+  return Math.abs(wall.a.x - wall.b.x) <= eps || Math.abs(wall.a.y - wall.b.y) <= eps;
+}
+
+export function isAxisAlignedSegment(a: Point, b: Point, eps = AXIS_ALIGN_EPS_MM): boolean {
+  return Math.abs(a.x - b.x) <= eps || Math.abs(a.y - b.y) <= eps;
+}
+
+function wallsPerpendicular(a: Wall, b: Wall): boolean {
+  const ax = a.b.x - a.a.x;
+  const ay = a.b.y - a.a.y;
+  const bx = b.b.x - b.a.x;
+  const by = b.b.y - b.a.y;
+  const la = Math.hypot(ax, ay);
+  const lb = Math.hypot(bx, by);
+  if (la < 1 || lb < 1) return false;
+  return Math.abs((ax * bx + ay * by) / (la * lb)) < 0.08;
+}
+
+/**
+ * Right-angle contacts between walls on a floor.
+ * L = two tips meet; T = a tip sits on the other wall's span.
+ * Used for canvas highlight and later corner/joint generation.
+ */
+export function detectWallJoints(walls: Wall[], floor: FloorLevel): WallJoint[] {
+  const floorWalls = walls.filter((w) => w.floor === floor);
+  const out: WallJoint[] = [];
+  const seen = new Set<string>();
+
+  const push = (j: Omit<WallJoint, 'id'>) => {
+    const ids = [...j.wallIds].sort();
+    const key = `${ids[0]}:${ids[1]}:${j.kind}:${Math.round(j.point.x)}:${Math.round(j.point.y)}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    out.push({ ...j, id: `joint:${key}` });
+  };
+
+  for (let i = 0; i < floorWalls.length; i++) {
+    for (let j = i + 1; j < floorWalls.length; j++) {
+      const w0 = floorWalls[i];
+      const w1 = floorWalls[j];
+      if (!wallsPerpendicular(w0, w1)) continue;
+      const gap = Math.max(JOINT_GAP_MM, (w0.thickness + w1.thickness) / 2 + 40);
+
+      let foundL = false;
+      for (const e0 of ['a', 'b'] as const) {
+        for (const e1 of ['a', 'b'] as const) {
+          if (dist(w0[e0], w1[e1]) > gap) continue;
+          foundL = true;
+          push({
+            kind: 'L',
+            floor,
+            wallIds: [w0.id, w1.id],
+            ends: [
+              { wallId: w0.id, end: e0 },
+              { wallId: w1.id, end: e1 },
+            ],
+            point: {
+              x: Math.round((w0[e0].x + w1[e1].x) / 2),
+              y: Math.round((w0[e0].y + w1[e1].y) / 2),
+            },
+          });
+        }
+      }
+      if (foundL) continue;
+
+      const tryT = (tipWall: Wall, host: Wall) => {
+        for (const end of ['a', 'b'] as const) {
+          const tip = tipWall[end];
+          const hit = projectPointOnSegment(tip, host.a, host.b);
+          if (hit.dist > host.thickness / 2 + 30) continue;
+          if (dist(hit.point, host.a) < 80 || dist(hit.point, host.b) < 80) continue;
+          push({
+            kind: 'T',
+            floor,
+            wallIds: [tipWall.id, host.id],
+            ends: [
+              { wallId: tipWall.id, end },
+              { wallId: host.id, end: 'span' },
+            ],
+            point: { x: Math.round(hit.point.x), y: Math.round(hit.point.y) },
+          });
+        }
+      };
+      tryT(w0, w1);
+      tryT(w1, w0);
+    }
+  }
+  return out;
 }
 
 /**
@@ -245,174 +340,22 @@ function dockPointOnFace(
   return roundMm(pt);
 }
 
-function stickyFaceOrEnd(
-  raw: Point,
-  walls: Wall[],
-  prev: MagnetHit,
-  opts: {
-    ignoreWallId?: string;
-    selfThickness: number;
-    radii: ReturnType<typeof magnetRadiiForScale>;
-  },
-): MagnetHit | null {
-  if (!prev.wallId) return null;
-  const wall = walls.find((w) => w.id === prev.wallId);
-  if (!wall || wall.id === opts.ignoreWallId) return null;
-  const { radii } = opts;
-
-  if (prev.kind === 'endface') {
-    for (const edge of wallEndFaces(wall)) {
-      const hit = projectPointOnSegment(raw, edge.a, edge.b);
-      if (hit.dist <= radii.endfaceRelease) {
-        return {
-          point: roundMm(hit.point),
-          kind: 'endface',
-          wallId: wall.id,
-          strength: hit.dist,
-        };
-      }
-    }
-    return null;
-  }
-
-  if (prev.kind === 'face' || prev.kind === 'segment') {
-    for (const edge of wallEndFaces(wall)) {
-      const hit = projectPointOnSegment(raw, edge.a, edge.b);
-      if (hit.dist <= radii.endfaceEngage) {
-        return {
-          point: roundMm(hit.point),
-          kind: 'endface',
-          wallId: wall.id,
-          strength: hit.dist,
-        };
-      }
-    }
-    for (const edge of wallFaces(wall)) {
-      const hit = projectPointOnSegment(raw, edge.a, edge.b);
-      if (hit.dist <= radii.faceRelease) {
-        const pt = dockPointOnFace(raw, wall, edge, opts.selfThickness);
-        return {
-          point: pt,
-          kind: 'face',
-          wallId: wall.id,
-          strength: hit.dist,
-        };
-      }
-    }
-  }
-
-  if (prev.kind === 'endpoint') {
-    const d = dist(raw, prev.point);
-    if (d <= radii.tipRelease) {
-      return {
-        point: { ...prev.point },
-        kind: 'endpoint',
-        wallId: prev.wallId,
-        strength: d,
-      };
-    }
-  }
-  return null;
-}
-
-/**
- * Draft snap priority (Planner 5D style):
- * 1) торец (endface) — near wall ends
- * 2) грань (face) — T / side dock at ±thickness/2, not centerline
- * 3) tip-to-tip — only when clearly on the tip itself
- * 4) soft ortho + fine snap grid
- */
+/** Edit snap is 1 cm grid only — no face/tip magnet. */
 export function resolveDraftSnap(
   p: Point,
-  walls: Wall[],
+  _walls: Wall[] = [],
   opts: {
     ignoreWallId?: string;
     from?: Point;
     grid?: number;
     scale?: number;
     prev?: MagnetHit | null;
-    /** Thickness of the wall being drawn/moved — used for L-corner inset on faces. */
     selfThickness?: number;
-    /** Soft H/V assist. Default true when `from` is set. */
     ortho?: boolean;
   } = {},
 ): MagnetHit {
-  const radii = magnetRadiiForScale(opts.scale);
-  const selfThickness = opts.selfThickness ?? 200;
-  const raw = { x: p.x, y: p.y };
-  const useOrtho = opts.ortho ?? opts.from != null;
-
-  if (opts.prev && opts.prev.kind !== 'grid') {
-    const sticky = stickyFaceOrEnd(raw, walls, opts.prev, {
-      ignoreWallId: opts.ignoreWallId,
-      selfThickness,
-      radii,
-    });
-    if (sticky) return sticky;
-  }
-
-  const best = {
-    endface: null as MagnetHit | null,
-    face: null as MagnetHit | null,
-    end: null as MagnetHit | null,
-  };
-
-  for (const wall of walls) {
-    if (opts.ignoreWallId && wall.id === opts.ignoreWallId) continue;
-
-    for (const edge of wallEndFaces(wall)) {
-      const hit = projectPointOnSegment(raw, edge.a, edge.b);
-      if (hit.dist <= radii.endfaceEngage && (!best.endface || hit.dist < best.endface.strength)) {
-        best.endface = {
-          point: roundMm(hit.point),
-          kind: 'endface',
-          wallId: wall.id,
-          strength: hit.dist,
-        };
-      }
-    }
-
-    for (const edge of wallFaces(wall)) {
-      const cl = { x: (wall.a.x + wall.b.x) / 2, y: (wall.a.y + wall.b.y) / 2 };
-      const faceMid = { x: (edge.a.x + edge.b.x) / 2, y: (edge.a.y + edge.b.y) / 2 };
-      const faceSide = { x: faceMid.x - cl.x, y: faceMid.y - cl.y };
-      const tipRel = { x: raw.x - cl.x, y: raw.y - cl.y };
-      if (faceSide.x * tipRel.x + faceSide.y * tipRel.y < 0) continue;
-      const hit = projectPointOnSegment(raw, edge.a, edge.b);
-      if (hit.dist <= radii.faceEngage && (!best.face || hit.dist < best.face.strength)) {
-        const pt = dockPointOnFace(raw, wall, edge, selfThickness);
-        best.face = {
-          point: pt,
-          kind: 'face',
-          wallId: wall.id,
-          strength: hit.dist,
-        };
-      }
-    }
-
-    for (const end of [wall.a, wall.b]) {
-      const d = dist(raw, end);
-      if (d <= radii.tipEngage && (!best.end || d < best.end.strength)) {
-        best.end = { point: { x: end.x, y: end.y }, kind: 'endpoint', wallId: wall.id, strength: d };
-      }
-    }
-  }
-
-  // Face wins mid-span; торец when clearly closer to the end
-  if (best.face && best.endface) {
-    if (best.face.strength <= best.endface.strength + radii.endfaceEngage * 0.15) return best.face;
-    return best.endface;
-  }
-  if (best.face && (!best.end || best.end.strength > radii.tipEngage * 0.85)) return best.face;
-  if (best.endface) return best.endface;
-  if (best.end) return best.end;
-  if (best.face) return best.face;
-
-  let cursor = raw;
-  if (useOrtho && opts.from) cursor = orthoSnapFrom(opts.from, cursor, radii.ortho);
-  // Optional explicit grid (tests / callers). Default: continuous 1 mm free motion.
   const step = opts.grid ?? EDIT_GRID_MM;
-  const gridPt = snapPoint(cursor, step);
+  const gridPt = snapPoint(p, step);
   return { point: gridPt, kind: 'grid', strength: dist(p, gridPt) };
 }
 
@@ -782,76 +725,15 @@ export function resolveTranslateSnap(
   others: Wall[],
   opts: { scale?: number; grid?: number } = {},
 ): { dx: number; dy: number; kind: MagnetKind; ok: boolean } {
-  const radii = magnetRadiiForScale(opts.scale);
-  const dragLen = Math.hypot(dx, dy);
-  const dragU = dragLen > 1 ? { x: dx / dragLen, y: dy / dragLen } : { x: 0, y: 0 };
-
-  // Base: 1 cm grid. Magnets override when near hosts.
   const grid = opts.grid ?? EDIT_GRID_MM;
   const rawA = { x: wall.a.x + dx, y: wall.a.y + dy };
   const snappedA = snapPoint(rawA, grid);
-  let adx = snappedA.x - wall.a.x;
-  let ady = snappedA.y - wall.a.y;
-
-  type Cand = { dx: number; dy: number; dist: number; kind: MagnetKind };
-  const cands: Cand[] = [];
-
-  for (const end of ['a', 'b'] as const) {
-    const tip = { x: wall[end].x + adx, y: wall[end].y + ady };
-    for (const host of others) {
-      const basis = unitAndNormal(host.a, host.b);
-      if (!basis) continue;
-      for (const face of wallFaces(host)) {
-        const cl = { x: (host.a.x + host.b.x) / 2, y: (host.a.y + host.b.y) / 2 };
-        const faceMid = { x: (face.a.x + face.b.x) / 2, y: (face.a.y + face.b.y) / 2 };
-        const faceSide = { x: faceMid.x - cl.x, y: faceMid.y - cl.y };
-        const tipRel = { x: tip.x - cl.x, y: tip.y - cl.y };
-        if (faceSide.x * tipRel.x + faceSide.y * tipRel.y < 0) continue;
-
-        const hit = projectPointOnSegment(tip, face.a, face.b);
-        if (hit.dist > radii.faceEngage) continue;
-        const wallBasis = unitAndNormal(wall.a, wall.b);
-        if (!wallBasis) continue;
-        const alongDot = Math.abs(wallBasis.u.x * basis.u.x + wallBasis.u.y * basis.u.y);
-        const parallel = alongDot > 0.92;
-        const ortho = alongDot < 0.35;
-        if (!parallel && !ortho) continue;
-
-        const tdx = hit.point.x - wall[end].x;
-        const tdy = hit.point.y - wall[end].y;
-        if (dragLen > 20 && tdx * dragU.x + tdy * dragU.y < -40) continue;
-        cands.push({ dx: tdx, dy: tdy, dist: hit.dist, kind: 'face' });
-      }
-
-      for (const edge of wallEndFaces(host)) {
-        const hit = projectPointOnSegment(tip, edge.a, edge.b);
-        if (hit.dist > radii.endfaceEngage) continue;
-        const hostTip = dist(edge.a, host.a) < dist(edge.a, host.b) ? host.a : host.b;
-        const outward = dirFromTip(hostTip, host);
-        if (outward) {
-          const rel = { x: tip.x - hostTip.x, y: tip.y - hostTip.y };
-          if (rel.x * -outward.x + rel.y * -outward.y < -20) continue;
-        }
-        const tdx = hit.point.x - wall[end].x;
-        const tdy = hit.point.y - wall[end].y;
-        if (dragLen > 20 && tdx * dragU.x + tdy * dragU.y < -40) continue;
-        cands.push({ dx: tdx, dy: tdy, dist: hit.dist, kind: 'endface' });
-      }
-    }
-  }
-
-  let kind: MagnetKind = 'grid';
-  if (cands.length) {
-    cands.sort((a, b) => a.dist - b.dist);
-    adx = Math.round(cands[0].dx);
-    ady = Math.round(cands[0].dy);
-    kind = cands[0].kind;
-  }
-
+  const adx = snappedA.x - wall.a.x;
+  const ady = snappedA.y - wall.a.y;
   const nextA = { x: wall.a.x + adx, y: wall.a.y + ady };
   const nextB = { x: wall.b.x + adx, y: wall.b.y + ady };
   const ok = !wallSegmentCollides(nextA, nextB, others);
-  return { dx: adx, dy: ady, kind, ok };
+  return { dx: adx, dy: ady, kind: 'grid', ok };
 }
 
 /** Right-angle L marks at interior of ~90° corners. */

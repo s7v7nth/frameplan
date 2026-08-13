@@ -6,6 +6,7 @@ type Props = {
   gridMm: number;
   draftLengthM: number | null;
   measureLengthM: number | null;
+  jointCount: number;
   toast: string | null;
   onZoomIn: () => void;
   onZoomOut: () => void;
@@ -16,6 +17,7 @@ export function CanvasChrome({
   gridMm,
   draftLengthM,
   measureLengthM,
+  jointCount,
   toast,
   onZoomIn,
   onZoomOut,
@@ -95,6 +97,7 @@ export function CanvasChrome({
       <div className="canvas-statusbar">
         <span>build {APP_BUILD}</span>
         <span>сетка {gridMm} мм · шаг 10 мм</span>
+        <span>стыки {jointCount}</span>
         {draftLengthM != null && <span className="accent">стена {draftLengthM.toFixed(2)} м</span>}
         {measureLengthM != null && (
           <span className="accent">рулетка {measureLengthM.toFixed(2)} м</span>
