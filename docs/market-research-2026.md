@@ -131,7 +131,7 @@ B2C-пользователь строит один дом и быстро ухо
 | **RedX Apps** | Плотники, DIY, подрядчики | Узкие калькуляторы, чертежи, cut list, мобильность | Фрагментированный набор инструментов; не российские СП | от ~$60/год за модуль [13] |
 | **К3-Коттедж** | Российские проектировщики и производства | Каркас, крыша, спецификации, раскрой, документация, ЧПУ | Высокий порог цены и освоения; desktop-профессиональный продукт | 207 тыс. ₽; 28,9 тыс. ₽/месяц [9] |
 | **Vertex BD** | Средние/крупные строители и заводы | Архитектура + автокаркас + shop drawings + CNC [14] | Enterprise-сложность, внедрение и цена по запросу | По запросу |
-| **Dietrich’s / hsbcad / SEMA / cadwork** | Профессиональное timber/prefab-производство | Глубокая CAD/CAM, сложные крыши и соединения, CNC/MES [15] | Не self-service для владельца одного дома | Обычно по запросу |
+| **hsbcad / ArchiFrame / SEMA / cadwork** | Профессиональное timber/prefab-производство | Глубокая CAD/CAM, сложные крыши и соединения, CNC/MES [15] | Не self-service для владельца одного дома | Обычно по запросу |
 | **SketchUp + Medeek** | Уверенные пользователи SketchUp | Параметрические стены, полы, фермы, фундамент; инженерный модуль развивается | Нужен SketchUp и несколько модулей; нормы США | $330 suite + $399/год SketchUp Pro [16][18] |
 | **SketchUp + OpenCutList** | Столяры и моделлеры | Бесплатные ведомости, карты раскроя, цены, DXF/SVG | Не создаёт корректный каркас из планировки и не проверяет СП | Бесплатно, open source [17] |
 | **Готовый проект** | B2C | Дёшево, быстро, уже оформлен | Плохо переносит индивидуальные изменения и участок | ~13,6–33 тыс. ₽ [7] |
@@ -656,7 +656,7 @@ B2C-пользователь строит один дом и быстро ухо
 12. [Home Designer: автоматический каркас, ведомость и цена](https://www.homedesignersoftware.com/products/home-designer/)
 13. [RedX Apps: чертежи и cut list](https://www.redxapps.com/), [пример публичной цены](https://apps.apple.com/us/app/redx-decks-3d-deck-builder/id6474487367)
 14. [Vertex BD: архитектурные листы, автокаркас, shop drawings, cut lists и CNC](https://vertexcad.com/bd/faq/)
-15. [Dietrich’s timber construction CAD](https://en.dietrichs.com/timber-construction-products/software-solutions/timber-construction-cad/), [hsbcad offsite construction](https://www.hsbcad.com/)
+15. [ArchiFrame: timber-моделирование, cut lists и CNC](https://archiframe.fi/en/archiframe/), [hsbcad offsite construction](https://www.hsbcad.com/)
 16. [Medeek Wall и пакет mdkBIM](https://design.medeek.com/resources/medeekwallplugin.pl), [Medeek Engineering](https://design.medeek.com/resources/medeekengineeringplugin.pl)
 17. [OpenCutList в SketchUp Extension Warehouse](https://extensions.sketchup.com/en/content/lair-du-bois-sketchup-toolbox-0), [исходный код](https://github.com/lairdubois/lairdubois-opencutlist-sketchup-extension)
 18. [SketchUp: официальные тарифы и форматы](https://sketchup.trimble.com/en/plans-and-pricing)
