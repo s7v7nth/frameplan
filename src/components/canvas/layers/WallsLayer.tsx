@@ -8,6 +8,7 @@ import {
 import type { Point, Tool, Wall } from '../../../domain/types';
 import { useEditorStore } from '../../../store/editorStore';
 import type { MagnetFeedback } from '../interaction/types';
+import { useRef } from 'react';
 
 type Props = {
   walls: Wall[];
@@ -56,6 +57,8 @@ export function WallsLayer({
   const moveWallEndpoint = useEditorStore((s) => s.moveWallEndpoint);
   const previewEndpointSnap = useEditorStore((s) => s.previewEndpointSnap);
   const checkpoint = useEditorStore((s) => s.checkpoint);
+  const commitWallEndpoint = useEditorStore((s) => s.commitWallEndpoint);
+  const endpointSnapPrev = useRef<MagnetHit | null>(null);
 
   const placeFromEvent = (e: { target: { getStage: () => { getPointerPosition: () => { x: number; y: number } | null } | null } }) => {
     const stage = e.target.getStage();
@@ -214,22 +217,25 @@ export function WallsLayer({
                     onMouseDown={(e) => {
                       e.cancelBubble = true;
                     }}
-                    onDragStart={() => checkpoint()}
+                    onDragStart={() => {
+                      checkpoint();
+                      endpointSnapPrev.current = null;
+                    }}
                     onDragMove={(e) => {
                       e.cancelBubble = true;
                       const raw = { x: e.target.x(), y: e.target.y() };
-                      const snapped = previewEndpointSnap(wall.id, end, raw);
-                      const magnetized =
-                        Math.hypot(snapped.x - raw.x, snapped.y - raw.y) > 0.5;
-                      e.target.position(snapped);
-                      setMagnetAt(
-                        magnetized
-                          ? { x: snapped.x, y: snapped.y, kind: 'endpoint' }
-                          : { x: snapped.x, y: snapped.y, kind: 'grid' },
-                      );
-                      moveWallEndpoint(wall.id, end, raw);
+                      const prev = endpointSnapPrev.current;
+                      const hit = previewEndpointSnap(wall.id, end, raw, { prev });
+                      endpointSnapPrev.current = hit;
+                      e.target.position(hit.point);
+                      setMagnetAt({ x: hit.point.x, y: hit.point.y, kind: hit.kind });
+                      moveWallEndpoint(wall.id, end, raw, { prev });
                     }}
-                    onDragEnd={() => setMagnetAt(null)}
+                    onDragEnd={() => {
+                      commitWallEndpoint(wall.id, end);
+                      endpointSnapPrev.current = null;
+                      setMagnetAt(null);
+                    }}
                   />
                 );
               })}

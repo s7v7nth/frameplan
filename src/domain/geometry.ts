@@ -54,15 +54,13 @@ export function snapPoint(p: Point, grid = GRID_MM): Point {
 }
 
 /**
- * Tip-to-tip (угол на угол) — only when cursor is this close to the tip
- * and no face/endface dock is better.
+ * Fallback world-mm magnet radii when scale is unknown (tests / offline).
+ * Prefer `magnetRadiiForScale` — CAD tools snap in screen pixels.
  */
 export const TIP_MAGNET_MM = 90;
 export const TIP_MAGNET_RELEASE_MM = 130;
-/** Long-face / T magnet (к грани, не к оси). */
 export const SEGMENT_MAGNET_MM = 170;
 export const SEGMENT_MAGNET_RELEASE_MM = 240;
-/** End-face (торец) engage radius from the end-face segment. */
 export const ENDFACE_MAGNET_MM = 140;
 export const ENDFACE_MAGNET_RELEASE_MM = 200;
 /** @deprecated alias — tip engage */
@@ -70,10 +68,70 @@ export const WALL_MAGNET_MM = TIP_MAGNET_MM;
 export const WALL_MAGNET_RELEASE_MM = TIP_MAGNET_RELEASE_MM;
 /** Weld shared tips after place (tip-to-tip only; never collapses butt offsets). */
 export const ENDPOINT_WELD_MM = 120;
-/** Soft H/V lock while drafting (only when falling back to grid). */
+/** Soft H/V lock while drafting (only when falling back to grid), world-mm fallback. */
 export const ORTHO_SNAP_MM = 70;
 /** Detect L-corners for butt join within this radius of a tip pair. */
 export const BUTT_JOIN_DETECT_MM = 280;
+
+/** Screen-space magnet radii → world mm (zoom-invariant feel, like Planner/CAD). */
+export function magnetRadiiForScale(scale?: number): {
+  tipEngage: number;
+  tipRelease: number;
+  faceEngage: number;
+  faceRelease: number;
+  endfaceEngage: number;
+  endfaceRelease: number;
+  ortho: number;
+} {
+  if (scale == null || !Number.isFinite(scale) || scale <= 0) {
+    return {
+      tipEngage: TIP_MAGNET_MM,
+      tipRelease: TIP_MAGNET_RELEASE_MM,
+      faceEngage: SEGMENT_MAGNET_MM,
+      faceRelease: SEGMENT_MAGNET_RELEASE_MM,
+      endfaceEngage: ENDFACE_MAGNET_MM,
+      endfaceRelease: ENDFACE_MAGNET_RELEASE_MM,
+      ortho: ORTHO_SNAP_MM,
+    };
+  }
+  const s = Math.min(0.5, Math.max(0.015, scale));
+  return {
+    tipEngage: 12 / s,
+    tipRelease: 18 / s,
+    faceEngage: 16 / s,
+    faceRelease: 24 / s,
+    endfaceEngage: 14 / s,
+    endfaceRelease: 20 / s,
+    ortho: 6 / s, // ~6 screen px soft ortho (Shift-free assist)
+  };
+}
+
+/**
+ * Free-placement snap grid (finer than visual grid).
+ * Caps coarse zoom steps so tips don't jump 200 mm per cell.
+ */
+export function snapGridForScale(scale?: number): number {
+  if (scale == null) return GRID_MM;
+  const visual = gridStepForScale(scale);
+  // Aim ~8 px per step, never coarser than 50 mm while editing tips
+  const s = Math.min(0.5, Math.max(0.015, scale));
+  const target = 8 / s;
+  const steps = [10, 20, 25, 50] as const;
+  let best: number = 50;
+  let bestErr = Infinity;
+  for (const step of steps) {
+    const err = Math.abs(step - target);
+    if (err < bestErr) {
+      bestErr = err;
+      best = step;
+    }
+  }
+  return Math.min(visual, best);
+}
+
+function roundMm(p: Point): Point {
+  return { x: Math.round(p.x), y: Math.round(p.y) };
+}
 
 export type MagnetKind = 'endpoint' | 'segment' | 'face' | 'endface' | 'grid';
 
@@ -153,13 +211,13 @@ export function wallEndFaces(wall: Wall): WallEdge[] {
  * Dock point on a host long-face for an L/T butt joint.
  * Near a host tip, insets by selfThickness/2 along the face so centerlines
  * form Planner-style geometry (through length L, butt L−2t).
+ * Continuous along the face — never grid-quantized (that caused 200 mm jumps).
  */
 function dockPointOnFace(
   raw: Point,
   host: Wall,
   face: WallEdge,
   selfThickness: number,
-  grid: number,
 ): Point {
   const hit = projectPointOnSegment(raw, face.a, face.b);
   let pt = hit.point;
@@ -171,7 +229,7 @@ function dockPointOnFace(
       for (const tip of [host.a, host.b]) {
         const onFace = projectPointOnSegment(tip, face.a, face.b);
         if (onFace.dist > host.thickness * 0.6) continue;
-        if (dist(pt, onFace.point) > Math.max(ENDFACE_MAGNET_MM, inset + 40)) continue;
+        if (dist(pt, onFace.point) > Math.max(inset + 80, host.thickness)) continue;
         const fromA = dist(onFace.point, face.a);
         const fromB = dist(onFace.point, face.b);
         pt =
@@ -182,27 +240,30 @@ function dockPointOnFace(
       }
     }
   }
-  const g = snapPoint(pt, grid);
-  const onFace = projectPointOnSegment(g, face.a, face.b);
-  return { x: onFace.point.x, y: onFace.point.y };
+  return roundMm(pt);
 }
 
 function stickyFaceOrEnd(
   raw: Point,
   walls: Wall[],
   prev: MagnetHit,
-  opts: { ignoreWallId?: string; selfThickness: number; grid: number },
+  opts: {
+    ignoreWallId?: string;
+    selfThickness: number;
+    radii: ReturnType<typeof magnetRadiiForScale>;
+  },
 ): MagnetHit | null {
   if (!prev.wallId) return null;
   const wall = walls.find((w) => w.id === prev.wallId);
   if (!wall || wall.id === opts.ignoreWallId) return null;
+  const { radii } = opts;
 
   if (prev.kind === 'endface') {
     for (const edge of wallEndFaces(wall)) {
       const hit = projectPointOnSegment(raw, edge.a, edge.b);
-      if (hit.dist <= ENDFACE_MAGNET_RELEASE_MM) {
+      if (hit.dist <= radii.endfaceRelease) {
         return {
-          point: { x: hit.point.x, y: hit.point.y },
+          point: roundMm(hit.point),
           kind: 'endface',
           wallId: wall.id,
           strength: hit.dist,
@@ -213,12 +274,11 @@ function stickyFaceOrEnd(
   }
 
   if (prev.kind === 'face' || prev.kind === 'segment') {
-    // Upgrade to endface when pushed into a торец
     for (const edge of wallEndFaces(wall)) {
       const hit = projectPointOnSegment(raw, edge.a, edge.b);
-      if (hit.dist <= ENDFACE_MAGNET_MM) {
+      if (hit.dist <= radii.endfaceEngage) {
         return {
-          point: { x: hit.point.x, y: hit.point.y },
+          point: roundMm(hit.point),
           kind: 'endface',
           wallId: wall.id,
           strength: hit.dist,
@@ -227,8 +287,8 @@ function stickyFaceOrEnd(
     }
     for (const edge of wallFaces(wall)) {
       const hit = projectPointOnSegment(raw, edge.a, edge.b);
-      if (hit.dist <= SEGMENT_MAGNET_RELEASE_MM) {
-        const pt = dockPointOnFace(raw, wall, edge, opts.selfThickness, opts.grid);
+      if (hit.dist <= radii.faceRelease) {
+        const pt = dockPointOnFace(raw, wall, edge, opts.selfThickness);
         return {
           point: pt,
           kind: 'face',
@@ -241,7 +301,7 @@ function stickyFaceOrEnd(
 
   if (prev.kind === 'endpoint') {
     const d = dist(raw, prev.point);
-    if (d <= TIP_MAGNET_RELEASE_MM) {
+    if (d <= radii.tipRelease) {
       return {
         point: { ...prev.point },
         kind: 'endpoint',
@@ -258,7 +318,7 @@ function stickyFaceOrEnd(
  * 1) торец (endface) — near wall ends
  * 2) грань (face) — T / side dock at ±thickness/2, not centerline
  * 3) tip-to-tip — only when clearly on the tip itself
- * 4) ortho + zoom-scaled grid
+ * 4) soft ortho + fine snap grid
  */
 export function resolveDraftSnap(
   p: Point,
@@ -271,17 +331,23 @@ export function resolveDraftSnap(
     prev?: MagnetHit | null;
     /** Thickness of the wall being drawn/moved — used for L-corner inset on faces. */
     selfThickness?: number;
+    /** Soft H/V assist. Default true when `from` is set. */
+    ortho?: boolean;
   } = {},
 ): MagnetHit {
-  const grid = opts.grid ?? (opts.scale != null ? gridStepForScale(opts.scale) : GRID_MM);
+  const radii = magnetRadiiForScale(opts.scale);
+  const grid =
+    opts.grid ??
+    (opts.scale != null ? snapGridForScale(opts.scale) : GRID_MM);
   const selfThickness = opts.selfThickness ?? 200;
   const raw = { x: p.x, y: p.y };
+  const useOrtho = opts.ortho ?? opts.from != null;
 
   if (opts.prev && opts.prev.kind !== 'grid') {
     const sticky = stickyFaceOrEnd(raw, walls, opts.prev, {
       ignoreWallId: opts.ignoreWallId,
       selfThickness,
-      grid,
+      radii,
     });
     if (sticky) return sticky;
   }
@@ -297,9 +363,9 @@ export function resolveDraftSnap(
 
     for (const edge of wallEndFaces(wall)) {
       const hit = projectPointOnSegment(raw, edge.a, edge.b);
-      if (hit.dist <= ENDFACE_MAGNET_MM && (!best.endface || hit.dist < best.endface.strength)) {
+      if (hit.dist <= radii.endfaceEngage && (!best.endface || hit.dist < best.endface.strength)) {
         best.endface = {
-          point: { x: hit.point.x, y: hit.point.y },
+          point: roundMm(hit.point),
           kind: 'endface',
           wallId: wall.id,
           strength: hit.dist,
@@ -314,8 +380,8 @@ export function resolveDraftSnap(
       const tipRel = { x: raw.x - cl.x, y: raw.y - cl.y };
       if (faceSide.x * tipRel.x + faceSide.y * tipRel.y < 0) continue;
       const hit = projectPointOnSegment(raw, edge.a, edge.b);
-      if (hit.dist <= SEGMENT_MAGNET_MM && (!best.face || hit.dist < best.face.strength)) {
-        const pt = dockPointOnFace(raw, wall, edge, selfThickness, grid);
+      if (hit.dist <= radii.faceEngage && (!best.face || hit.dist < best.face.strength)) {
+        const pt = dockPointOnFace(raw, wall, edge, selfThickness);
         best.face = {
           point: pt,
           kind: 'face',
@@ -327,24 +393,24 @@ export function resolveDraftSnap(
 
     for (const end of [wall.a, wall.b]) {
       const d = dist(raw, end);
-      if (d <= TIP_MAGNET_MM && (!best.end || d < best.end.strength)) {
+      if (d <= radii.tipEngage && (!best.end || d < best.end.strength)) {
         best.end = { point: { x: end.x, y: end.y }, kind: 'endpoint', wallId: wall.id, strength: d };
       }
     }
   }
 
-  // Face wins when closer / mid-span; торец only when clearly at the end (not reverse of face)
+  // Face wins mid-span; торец when clearly closer to the end
   if (best.face && best.endface) {
-    if (best.face.strength <= best.endface.strength + 25) return best.face;
+    if (best.face.strength <= best.endface.strength + radii.endfaceEngage * 0.15) return best.face;
     return best.endface;
   }
-  if (best.face && (!best.end || best.end.strength > TIP_MAGNET_MM * 0.85)) return best.face;
+  if (best.face && (!best.end || best.end.strength > radii.tipEngage * 0.85)) return best.face;
   if (best.endface) return best.endface;
   if (best.end) return best.end;
   if (best.face) return best.face;
 
   let cursor = raw;
-  if (opts.from) cursor = orthoSnapFrom(opts.from, cursor, Math.max(ORTHO_SNAP_MM, grid));
+  if (useOrtho && opts.from) cursor = orthoSnapFrom(opts.from, cursor, radii.ortho);
   const gridPt = snapPoint(cursor, grid);
   return { point: gridPt, kind: 'grid', strength: dist(p, gridPt) };
 }
@@ -546,15 +612,21 @@ export function applyButtJoins(
 /**
  * Tip-to-tip weld only. Skips pairs that look like Planner butt docks
  * (separated by ~thickness along a face).
+ * When `mutableWallIds` is set, only those walls' tips are rewritten
+ * (hosts stay put — CAD-style commit of the edited wall).
  */
 export function weldWallEndpoints(
   walls: Wall[],
   floor: number,
   weldMm = ENDPOINT_WELD_MM,
+  opts: { mutableWallIds?: string[] } = {},
 ): Wall[] {
   type Tip = { wallId: string; end: 'a' | 'b'; x: number; y: number };
   const tips: Tip[] = [];
   const byId = new Map(walls.map((w) => [w.id, w]));
+  const mutable = opts.mutableWallIds ? new Set(opts.mutableWallIds) : null;
+  const canMutate = (id: string) => !mutable || mutable.has(id);
+
   for (const w of walls) {
     if (w.floor !== floor) continue;
     tips.push({ wallId: w.id, end: 'a', x: w.a.x, y: w.a.y });
@@ -580,7 +652,6 @@ export function weldWallEndpoints(
     if (d < 1) return false;
     const minT = Math.min(w0.thickness, w1.thickness);
     const maxT = Math.max(w0.thickness, w1.thickness);
-    // Only protect docks that already sit on a face (Planner butt), not tip-to-tip misses
     if (d < minT * 0.4 || d > maxT * 1.65) return false;
     const d0 = dirFromTip(tips[i], w0);
     const d1 = dirFromTip(tips[j], w1);
@@ -608,11 +679,18 @@ export function weldWallEndpoints(
   const clusterPoint = new Map<number, Point>();
   for (let i = 0; i < tips.length; i++) {
     const root = find(i);
-    if (!clusterPoint.has(root)) clusterPoint.set(root, { x: tips[i].x, y: tips[i].y });
+    if (!clusterPoint.has(root)) {
+      // Prefer an immutable tip as the weld target so hosts stay put
+      const members = tips.map((t, k) => ({ t, k })).filter(({ k }) => find(k) === root);
+      const host = members.find(({ t }) => !canMutate(t.wallId));
+      const anchor = host?.t ?? tips[i];
+      clusterPoint.set(root, { x: anchor.x, y: anchor.y });
+    }
   }
 
   const next = walls.map((w) => ({ ...w, a: { ...w.a }, b: { ...w.b } }));
   for (let i = 0; i < tips.length; i++) {
+    if (!canMutate(tips[i].wallId)) continue;
     const root = find(i);
     if (tips.filter((_, k) => find(k) === root).length < 2) continue;
     const pt = clusterPoint.get(root)!;
@@ -630,7 +708,65 @@ export function finalizeWallJoins(
   floor: number,
   opts: { mutableWallIds?: string[] } = {},
 ): Wall[] {
-  return weldWallEndpoints(applyButtJoins(walls, floor, opts), floor);
+  return weldWallEndpoints(applyButtJoins(walls, floor, opts), floor, ENDPOINT_WELD_MM, opts);
+}
+
+/**
+ * CAD-style endpoint commit: only adjust the dragged tip.
+ * - tip-to-tip: snap this tip onto a nearby host tip
+ * - face dock: project this tip onto the nearest host face (with L inset)
+ * Never lateral-shifts the whole wall or rewrites other walls.
+ */
+export function commitEndpointJoin(
+  walls: Wall[],
+  floor: number,
+  wallId: string,
+  end: 'a' | 'b',
+): Wall[] {
+  const next = walls.map((w) => ({ ...w, a: { ...w.a }, b: { ...w.b } }));
+  const wall = next.find((w) => w.id === wallId && w.floor === floor);
+  if (!wall) return walls;
+  const tip = wall[end];
+  const others = next.filter((w) => w.floor === floor && w.id !== wallId);
+
+  // Prefer tip-to-tip weld onto a host tip
+  let bestTip: { point: Point; d: number } | null = null;
+  for (const host of others) {
+    for (const hostEnd of [host.a, host.b]) {
+      const d = dist(tip, hostEnd);
+      if (d <= ENDPOINT_WELD_MM && (!bestTip || d < bestTip.d)) {
+        // Skip Planner butt offsets (already docked on a face)
+        const onFace = wallFaces(host).some((f) => projectPointOnSegment(tip, f.a, f.b).dist <= 16);
+        const dHost = dirFromTip(hostEnd, host);
+        const dSelf = dirFromTip(tip, wall);
+        if (onFace && dHost && dSelf) {
+          const cross = Math.abs(dHost.x * dSelf.y - dHost.y * dSelf.x);
+          if (cross > 0.55 && d > Math.min(host.thickness, wall.thickness) * 0.4) continue;
+        }
+        bestTip = { point: { ...hostEnd }, d };
+      }
+    }
+  }
+  if (bestTip) {
+    wall[end] = roundMm(bestTip.point);
+    return next;
+  }
+
+  // Else dock onto nearest face if close enough
+  let bestFace: { point: Point; d: number } | null = null;
+  for (const host of others) {
+    for (const face of wallFaces(host)) {
+      const hit = projectPointOnSegment(tip, face.a, face.b);
+      if (hit.dist > host.thickness * 0.75 + 40) continue;
+      const pt = dockPointOnFace(tip, host, face, wall.thickness);
+      const d = dist(tip, pt);
+      if (!bestFace || d < bestFace.d) bestFace = { point: pt, d };
+    }
+  }
+  if (bestFace && bestFace.d < wall.thickness + 80) {
+    wall[end] = bestFace.point;
+  }
+  return next;
 }
 
 /**
@@ -645,11 +781,12 @@ export function resolveTranslateSnap(
   others: Wall[],
   opts: { scale?: number; grid?: number } = {},
 ): { dx: number; dy: number; kind: MagnetKind; ok: boolean } {
-  const grid = opts.grid ?? (opts.scale != null ? gridStepForScale(opts.scale) : GRID_MM);
+  const radii = magnetRadiiForScale(opts.scale);
+  const grid = opts.grid ?? snapGridForScale(opts.scale);
   const dragLen = Math.hypot(dx, dy);
   const dragU = dragLen > 1 ? { x: dx / dragLen, y: dy / dragLen } : { x: 0, y: 0 };
 
-  // Base: grid-snap the translation via tip A
+  // Base: fine grid-snap the translation via tip A (continuous-ish, not 200 mm)
   const rawA = { x: wall.a.x + dx, y: wall.a.y + dy };
   const gridA = snapPoint(rawA, grid);
   let adx = gridA.x - wall.a.x;
@@ -663,17 +800,15 @@ export function resolveTranslateSnap(
     for (const host of others) {
       const basis = unitAndNormal(host.a, host.b);
       if (!basis) continue;
-      // Only faces on the approach side of the host (or nearest if no drag)
       for (const face of wallFaces(host)) {
         const cl = { x: (host.a.x + host.b.x) / 2, y: (host.a.y + host.b.y) / 2 };
         const faceMid = { x: (face.a.x + face.b.x) / 2, y: (face.a.y + face.b.y) / 2 };
         const faceSide = { x: faceMid.x - cl.x, y: faceMid.y - cl.y };
         const tipRel = { x: tip.x - cl.x, y: tip.y - cl.y };
-        // Only the face on the tip's side of the host (no reverse magnet)
         if (faceSide.x * tipRel.x + faceSide.y * tipRel.y < 0) continue;
 
         const hit = projectPointOnSegment(tip, face.a, face.b);
-        if (hit.dist > SEGMENT_MAGNET_MM) continue;
+        if (hit.dist > radii.faceEngage) continue;
         const wallBasis = unitAndNormal(wall.a, wall.b);
         if (!wallBasis) continue;
         const alongDot = Math.abs(wallBasis.u.x * basis.u.x + wallBasis.u.y * basis.u.y);
@@ -687,14 +822,12 @@ export function resolveTranslateSnap(
         cands.push({ dx: tdx, dy: tdy, dist: hit.dist, kind: 'face' });
       }
 
-      // Endface only when tip is outside past the host tip (true торец approach)
       for (const edge of wallEndFaces(host)) {
         const hit = projectPointOnSegment(tip, edge.a, edge.b);
-        if (hit.dist > ENDFACE_MAGNET_MM) continue;
+        if (hit.dist > radii.endfaceEngage) continue;
         const hostTip = dist(edge.a, host.a) < dist(edge.a, host.b) ? host.a : host.b;
         const outward = dirFromTip(hostTip, host);
         if (outward) {
-          // Tip should be on the outward side of the tip (approaching the end from outside)
           const rel = { x: tip.x - hostTip.x, y: tip.y - hostTip.y };
           if (rel.x * -outward.x + rel.y * -outward.y < -20) continue;
         }

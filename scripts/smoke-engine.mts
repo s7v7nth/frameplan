@@ -6,7 +6,9 @@ import {
   resolveDraftSnap,
   GRID_MM,
   gridStepForScale,
+  snapGridForScale,
   finalizeWallJoins,
+  commitEndpointJoin,
   wallLength,
 } from '../src/domain/geometry';
 import { generateFrameModel } from '../src/engine/frameEngine';
@@ -315,6 +317,64 @@ if (
 ) {
   console.error('Magnet smoke failed', magnetReport);
   process.exit(1);
+}
+
+// Face dock must be continuous (not 200 mm grid jumps) at typical zoom
+const contA = resolveDraftSnap({ x: 3010, y: 90 }, existing, { scale: 0.08, selfThickness: 200 });
+const contB = resolveDraftSnap({ x: 3040, y: 90 }, existing, { scale: 0.08, selfThickness: 200 });
+if (
+  contA.kind !== 'face' ||
+  contB.kind !== 'face' ||
+  Math.abs(contA.point.x - 3010) > 1 ||
+  Math.abs(contB.point.x - 3040) > 1 ||
+  Math.abs(contB.point.x - contA.point.x - 30) > 1
+) {
+  console.error('Continuous face snap failed', { contA, contB });
+  process.exit(1);
+}
+console.log('faceContinuous', { a: contA.point, b: contB.point, dx: contB.point.x - contA.point.x });
+
+const fineGrid = snapGridForScale(0.08);
+if (fineGrid > 50) {
+  console.error('snapGridForScale too coarse at default zoom', fineGrid);
+  process.exit(1);
+}
+console.log('snapGrid', { fineGrid, visual: gridStepForScale(0.08) });
+
+// Endpoint commit must not move the opposite tip of the same wall
+{
+  const walls = [
+    {
+      id: 'h',
+      a: { x: 0, y: 0 },
+      b: { x: 6000, y: 0 },
+      thickness: 200,
+      kind: 'exterior' as const,
+      height: 2700,
+      floor: 0 as const,
+    },
+    {
+      id: 'v',
+      a: { x: 3000, y: 100 },
+      b: { x: 3000, y: 4000 },
+      thickness: 120,
+      kind: 'interior' as const,
+      height: 2700,
+      floor: 0 as const,
+    },
+  ];
+  const beforeA = { ...walls[1].a };
+  const beforeB = { ...walls[1].b };
+  const moved = walls.map((w) =>
+    w.id === 'v' ? { ...w, a: { x: 3100, y: 100 } } : { ...w, a: { ...w.a }, b: { ...w.b } },
+  );
+  const committed = commitEndpointJoin(moved, 0, 'v', 'a');
+  const v = committed.find((w) => w.id === 'v')!;
+  if (Math.abs(v.b.x - beforeB.x) > 0.5 || Math.abs(v.b.y - beforeB.y) > 0.5) {
+    console.error('commitEndpointJoin moved opposite tip', { beforeA, beforeB, after: v });
+    process.exit(1);
+  }
+  console.log('endpointCommit', { a: v.a, b: v.b, oppositeFixed: true });
 }
 
 // Planner 6×6 square, t=150 → lengths 6000 / 5700
