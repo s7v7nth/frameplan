@@ -1,10 +1,11 @@
 import {
+  detectWallJoints,
+  isThroughWall,
   pointAlongWall,
   projectPointOnSegment,
   uid,
   wallAngle,
   wallLength,
-  wallFaces,
 } from '../domain/geometry';
 import type {
   FloorLevel,
@@ -15,6 +16,7 @@ import type {
   Project,
   ProjectSettings,
   Wall,
+  WallJoint,
 } from '../domain/types';
 import { analyzeFloorBays } from './floorLayout';
 import { headerHeightMm } from './spanTables';
@@ -321,109 +323,135 @@ export function buildWallMembers(
   }
 }
 
-/** Shared corner tolerance — tip-to-tip or Planner butt dock (tip on mate face near tip). */
-function near(a: Point, b: Point, eps = 25): boolean {
-  return Math.hypot(a.x - b.x, a.y - b.y) <= eps;
+function jointsOnFloors(walls: Wall[]): WallJoint[] {
+  const seen = new Set<FloorLevel>();
+  const out: WallJoint[] = [];
+  for (const w of walls) {
+    if (seen.has(w.floor)) continue;
+    seen.add(w.floor);
+    out.push(...detectWallJoints(walls, w.floor));
+  }
+  return out;
 }
 
-function tipsFormCorner(
-  a: { wall: Wall; end: 'a' | 'b'; point: Point },
-  b: { wall: Wall; end: 'a' | 'b'; point: Point },
+function endStudS(wall: Wall, end: 'a' | 'b', tw: number, inset = 0): number {
+  const len = wallLength(wall);
+  if (end === 'a') return Math.max(0, Math.min(len - tw, inset * tw));
+  return Math.max(0, len - (inset + 1) * tw);
+}
+
+function postOccupied(
+  members: FrameMember[],
+  wallId: string,
+  s: number,
+  tw: number,
 ): boolean {
-  const maxT = Math.max(a.wall.thickness, b.wall.thickness);
-  if (near(a.point, b.point, Math.max(25, maxT * 0.2))) return true;
-  // Planner butt: each tip near the other's face, and close to the other's tip within ~t√2
-  const dockR = maxT * 1.6 + 30;
-  if (!near(a.point, b.point, dockR)) return false;
-  const aOnBFace = wallFaces(b.wall).some(
-    (f) => projectPointOnSegment(a.point, f.a, f.b).dist <= b.wall.thickness * 0.55 + 10,
+  return members.some(
+    (m) =>
+      m.wallId === wallId &&
+      m.elev &&
+      ['stud', 'corner_stud', 'king_stud', 'jack_stud'].includes(m.kind) &&
+      Math.abs(m.elev.s0 - s) < tw,
   );
-  const bOnAFace = wallFaces(a.wall).some(
-    (f) => projectPointOnSegment(b.point, f.a, f.b).dist <= a.wall.thickness * 0.55 + 10,
-  );
-  return aOnBFace || bOnAFace;
 }
 
 /**
- * Exterior/interior corner: California-style 2+1 studs (SP 7.2.11 — two or three studs).
- * Extra stud on secondary wall provides nailing for interior sheathing.
+ * Skip ordinary end studs at L-joints — California 2+1 assembly replaces them.
+ * Driven by `detectWallJoints` (shared tips and Planner butt docks).
+ */
+export function prepareWallSkipFlags(walls: Wall[]): Map<string, { start: boolean; end: boolean }> {
+  const skip = new Map<string, { start: boolean; end: boolean }>();
+  for (const w of walls) skip.set(w.id, { start: false, end: false });
+
+  for (const j of jointsOnFloors(walls)) {
+    if (j.kind !== 'L') continue;
+    for (const e of j.ends) {
+      if (e.end === 'span') continue;
+      const flags = skip.get(e.wallId);
+      if (!flags) continue;
+      if (e.end === 'a') flags.start = true;
+      else flags.end = true;
+    }
+  }
+  return skip;
+}
+
+/**
+ * SP 31-105-2002 §7.2.11 — California / «тёплый» corner at every L-joint.
+ * Through wall: two studs (outer + interior nailing). Butt wall: one end stud.
+ * Joints come from `detectWallJoints` (canvas walljoint), not tip heuristics.
  */
 export function buildCaliforniaCorners(
   walls: Wall[],
   settings: ProjectSettings,
   members: FrameMember[],
   lumber: LumberPiece[],
-): Map<string, { start: boolean; end: boolean }> {
-  const skip = new Map<string, { start: boolean; end: boolean }>();
-  for (const w of walls) skip.set(w.id, { start: false, end: false });
+) {
+  const byId = new Map(walls.map((w) => [w.id, w]));
+  const section = settings.studSectionMm;
+  const tw = section.width;
+  const plateThk = tw;
+  const bottomH = plateThk;
+  const topH = plateThk * 2;
+  const done = new Set<string>();
 
-  const ends: { wall: Wall; end: 'a' | 'b'; point: Point }[] = [];
-  for (const w of walls) {
-    ends.push({ wall: w, end: 'a', point: w.a });
-    ends.push({ wall: w, end: 'b', point: w.b });
+  const addCornerStud = (wall: Wall, s: number, label: string) => {
+    const clamped = Math.max(0, Math.min(wallLength(wall) - tw, Math.round(s)));
+    if (postOccupied(members, wall.id, clamped, tw)) return;
+    const H = wall.height || settings.floorHeightMm;
+    const p = along(wall, clamped + tw / 2);
+    pushMember(members, lumber, {
+      kind: 'corner_stud',
+      label,
+      sectionMm: section,
+      lengthMm: H - bottomH - topH,
+      floor: wall.floor,
+      wallId: wall.id,
+      planMark: { x: p.x, y: p.y, angle: wallAngle(wall) },
+      elev: { s0: clamped, s1: clamped + tw, z0: bottomH, z1: H - topH },
+    });
+  };
+
+  for (const j of jointsOnFloors(walls)) {
+    if (j.kind !== 'L') continue;
+    const e0 = j.ends.find((e) => e.wallId === j.wallIds[0]);
+    const e1 = j.ends.find((e) => e.wallId === j.wallIds[1]);
+    if (!e0 || !e1 || e0.end === 'span' || e1.end === 'span') continue;
+
+    const w0 = byId.get(j.wallIds[0]);
+    const w1 = byId.get(j.wallIds[1]);
+    if (!w0 || !w1) continue;
+
+    const key = `${[w0.id, w1.id].sort().join(':')}:${e0.end}:${e1.end}`;
+    if (done.has(key)) continue;
+    done.add(key);
+
+    const through = isThroughWall(w0, w1) ? w0 : w1;
+    const butt = through.id === w0.id ? w1 : w0;
+    const throughEnd = through.id === w0.id ? e0.end : e1.end;
+    const buttEnd = butt.id === w0.id ? e0.end : e1.end;
+
+    addCornerStud(
+      through,
+      endStudS(through, throughEnd, tw, 0),
+      'Калифорнийский угол — стойка 1 (СП 7.2.11)',
+    );
+    addCornerStud(
+      through,
+      endStudS(through, throughEnd, tw, 1),
+      'Калифорнийский угол — стойка 2 (тёплый угол)',
+    );
+    addCornerStud(
+      butt,
+      endStudS(butt, buttEnd, tw, 0),
+      'Калифорнийский угол — примыкание (СП 7.2.11)',
+    );
   }
-
-  const used = new Set<string>();
-  for (let i = 0; i < ends.length; i++) {
-    const keyI = `${ends[i].wall.id}:${ends[i].end}`;
-    if (used.has(keyI)) continue;
-    const group = [ends[i]];
-    for (let j = i + 1; j < ends.length; j++) {
-      if (ends[j].wall.floor !== ends[i].wall.floor) continue;
-      if (ends[j].wall.id === ends[i].wall.id) continue;
-      if (tipsFormCorner(ends[i], ends[j])) group.push(ends[j]);
-    }
-    if (group.length < 2) continue;
-    for (const g of group) used.add(`${g.wall.id}:${g.end}`);
-
-    for (const g of group) {
-      const flags = skip.get(g.wall.id)!;
-      if (g.end === 'a') flags.start = true;
-      else flags.end = true;
-    }
-
-    const primary = group[0];
-    const H = primary.wall.height || settings.floorHeightMm;
-    const section = settings.studSectionMm;
-    const tw = section.width;
-    const plateThk = tw;
-    const bottomH = plateThk;
-    const topH = plateThk * 2;
-    const len = wallLength(primary.wall);
-    const sCorner = primary.end === 'a' ? 0 : Math.max(0, len - tw);
-    const sInset =
-      primary.end === 'a' ? Math.min(len - tw, tw) : Math.max(0, len - 2 * tw);
-
-    const addCornerStud = (wall: Wall, s: number, label: string) => {
-      const p = along(wall, s + tw / 2);
-      pushMember(members, lumber, {
-        kind: 'stud',
-        label,
-        sectionMm: section,
-        lengthMm: H - bottomH - topH,
-        floor: wall.floor,
-        wallId: wall.id,
-        planMark: { x: p.x, y: p.y, angle: wallAngle(wall) },
-        elev: { s0: s, s1: s + tw, z0: bottomH, z1: H - topH },
-      });
-    };
-
-    addCornerStud(primary.wall, sCorner, 'Калифорнийский угол — стойка 1');
-    addCornerStud(primary.wall, sInset, 'Калифорнийский угол — стойка 2');
-    for (let g = 1; g < group.length; g++) {
-      const other = group[g];
-      const oLen = wallLength(other.wall);
-      const s = other.end === 'a' ? 0 : Math.max(0, oLen - tw);
-      addCornerStud(other.wall, s, 'Калифорнийский угол — примыкание');
-    }
-  }
-
-  return skip;
 }
 
 /**
- * SP 7.2.12 — mid-span T-junction of a partition/wall end onto a continuous wall:
- * add a full-height stud on the continuous wall at the junction for sheathing attachment.
+ * SP 7.2.12 — T-joint of a partition onto a continuous wall:
+ * full-height backing stud on the host at the joint (from `detectWallJoints`).
  */
 export function buildPartitionJunctions(
   walls: Wall[],
@@ -431,101 +459,41 @@ export function buildPartitionJunctions(
   members: FrameMember[],
   lumber: LumberPiece[],
 ) {
+  const byId = new Map(walls.map((w) => [w.id, w]));
   const section = settings.studSectionMm;
   const tw = section.width;
   const plateThk = tw;
   const bottomH = plateThk;
   const topH = plateThk * 2;
-  const eps = 25;
 
-  for (const branch of walls) {
-    for (const end of ['a', 'b'] as const) {
-      const pt = end === 'a' ? branch.a : branch.b;
-      // Skip if this end already meets another wall at a corner (shared tip or butt dock)
-      const meetsCorner = walls.some((w) => {
-        if (w.id === branch.id || w.floor !== branch.floor) return false;
-        return tipsFormCorner(
-          { wall: branch, end, point: pt },
-          {
-            wall: w,
-            end: Math.hypot(w.a.x - pt.x, w.a.y - pt.y) <= Math.hypot(w.b.x - pt.x, w.b.y - pt.y) ? 'a' : 'b',
-            point:
-              Math.hypot(w.a.x - pt.x, w.a.y - pt.y) <= Math.hypot(w.b.x - pt.x, w.b.y - pt.y)
-                ? w.a
-                : w.b,
-          },
-        );
-      });
-      if (meetsCorner) continue;
+  for (const j of jointsOnFloors(walls)) {
+    if (j.kind !== 'T') continue;
+    const span = j.ends.find((e) => e.end === 'span');
+    if (!span) continue;
+    const host = byId.get(span.wallId);
+    if (!host) continue;
 
-      for (const host of walls) {
-        if (host.id === branch.id || host.floor !== branch.floor) continue;
-        const hit = projectPointOnSegment(pt, host.a, host.b);
-        // Accept centerline hit OR tip sitting on host face (Planner T-butt)
-        const onFace = wallFaces(host).some(
-          (f) => projectPointOnSegment(pt, f.a, f.b).dist <= 12,
-        );
-        const faceDistOk =
-          hit.dist <= eps ||
-          (onFace && Math.abs(hit.dist - host.thickness / 2) <= host.thickness * 0.35 + 12);
-        if (!faceDistOk) continue;
-        // Mid-span only (not near host ends)
-        const hostLen = wallLength(host);
-        const s = hit.t * hostLen;
-        if (s < tw * 2 || s > hostLen - tw * 2) continue;
+    const hostLen = wallLength(host);
+    const hit = projectPointOnSegment(j.point, host.a, host.b);
+    const s = hit.t * hostLen;
+    if (s < tw * 2 || s > hostLen - tw * 2) continue;
 
-        // Avoid duplicating an existing stud/king/jack at this s
-        const already = members.some(
-          (m) =>
-            m.wallId === host.id &&
-            m.elev &&
-            ['stud', 'king_stud', 'jack_stud'].includes(m.kind) &&
-            Math.abs(m.elev.s0 - Math.round(s - tw / 2)) < tw,
-        );
-        if (already) continue;
+    const sClamped = Math.max(0, Math.min(hostLen - tw, Math.round(s - tw / 2)));
+    if (postOccupied(members, host.id, sClamped, tw)) continue;
 
-        const H = host.height || settings.floorHeightMm;
-        const sClamped = Math.max(0, Math.min(hostLen - tw, Math.round(s - tw / 2)));
-        const p = along(host, sClamped + tw / 2);
-        pushMember(members, lumber, {
-          kind: 'stud',
-          label: 'Стойка примыкания перегородки (СП 7.2.12)',
-          sectionMm: section,
-          lengthMm: H - bottomH - topH,
-          floor: host.floor,
-          wallId: host.id,
-          planMark: { x: p.x, y: p.y, angle: wallAngle(host) },
-          elev: { s0: sClamped, s1: sClamped + tw, z0: bottomH, z1: H - topH },
-        });
-      }
-    }
+    const H = host.height || settings.floorHeightMm;
+    const p = along(host, sClamped + tw / 2);
+    pushMember(members, lumber, {
+      kind: 'stud',
+      label: 'Стойка примыкания перегородки (СП 7.2.12)',
+      sectionMm: section,
+      lengthMm: H - bottomH - topH,
+      floor: host.floor,
+      wallId: host.id,
+      planMark: { x: p.x, y: p.y, angle: wallAngle(host) },
+      elev: { s0: sClamped, s1: sClamped + tw, z0: bottomH, z1: H - topH },
+    });
   }
-}
-
-export function prepareWallSkipFlags(walls: Wall[]): Map<string, { start: boolean; end: boolean }> {
-  const skip = new Map<string, { start: boolean; end: boolean }>();
-  for (const w of walls) skip.set(w.id, { start: false, end: false });
-
-  const ends: { wall: Wall; end: 'a' | 'b'; point: Point }[] = [];
-  for (const w of walls) {
-    ends.push({ wall: w, end: 'a', point: w.a });
-    ends.push({ wall: w, end: 'b', point: w.b });
-  }
-
-  for (let i = 0; i < ends.length; i++) {
-    for (let j = i + 1; j < ends.length; j++) {
-      if (ends[j].wall.floor !== ends[i].wall.floor) continue;
-      if (ends[j].wall.id === ends[i].wall.id) continue;
-      if (!near(ends[i].point, ends[j].point)) continue;
-      const a = skip.get(ends[i].wall.id)!;
-      const b = skip.get(ends[j].wall.id)!;
-      if (ends[i].end === 'a') a.start = true;
-      else a.end = true;
-      if (ends[j].end === 'a') b.start = true;
-      else b.end = true;
-    }
-  }
-  return skip;
 }
 
 export function buildFloorMembers(
@@ -830,13 +798,15 @@ export function renderWallElevationDrawing(
   const fillHeader = '#9ca3af';
   const fillPlate = '#374151';
   const fillCripple = '#f9fafb';
+  const fillCorner = '#fbbf24';
   const fillOpen = '#ffffff';
 
   let g = '';
 
   // Title block
+  const hasWarmCorner = mWall.some((m) => m.kind === 'corner_stud');
   g += `<text x="${marginL}" y="22" font-family="IBM Plex Sans,Manrope,sans-serif" font-size="14" font-weight="700" fill="${ink}">${titlePrefix} ${wallIndex + 1}</text>`;
-  g += `<text x="${marginL}" y="38" font-family="IBM Plex Sans,Manrope,sans-serif" font-size="11" fill="#4b5563">${wall.kind === 'exterior' ? 'Наружная' : 'Внутренняя'} · L=${(L / 1000).toFixed(2)} м · H=${(wallH / 1000).toFixed(2)} м · шаг стоек по проекту</text>`;
+  g += `<text x="${marginL}" y="38" font-family="IBM Plex Sans,Manrope,sans-serif" font-size="11" fill="#4b5563">${wall.kind === 'exterior' ? 'Наружная' : 'Внутренняя'} · L=${(L / 1000).toFixed(2)} м · H=${(wallH / 1000).toFixed(2)} м · шаг стоек по проекту${hasWarmCorner ? ' · тёплый угол СП 7.2.11' : ''}</text>`;
 
   // Outer wall outline
   g += `<rect x="${svgN(X(0))}" y="${svgN(Y(wallH))}" width="${svgN(L * scaleX)}" height="${svgN(wallH * scaleY)}" fill="#fff" stroke="${ink}" stroke-width="1.6"/>`;
@@ -847,6 +817,7 @@ export function renderWallElevationDrawing(
       top_plate: 1,
       cripple: 2,
       stud: 3,
+      corner_stud: 3.5,
       king_stud: 4,
       jack_stud: 5,
       blocking: 5.5,
@@ -875,6 +846,7 @@ export function renderWallElevationDrawing(
     else if (m.kind === 'jack_stud') fill = fillJack;
     else if (m.kind === 'header') fill = fillHeader;
     else if (m.kind === 'cripple') fill = fillCripple;
+    else if (m.kind === 'corner_stud') fill = fillCorner;
 
     g += `<rect x="${svgN(x)}" y="${svgN(y)}" width="${svgN(w)}" height="${svgN(h)}" fill="${fill}" stroke="${ink}" stroke-width="${sw}"/>`;
 
@@ -954,9 +926,26 @@ export function renderWallElevationDrawing(
     }
   }
 
+  // California / warm-corner callouts at wall ends (SP 7.2.11)
+  const cornerPosts = mWall.filter((m) => m.kind === 'corner_stud' && m.elev);
+  if (cornerPosts.length) {
+    const left = cornerPosts.filter((m) => m.elev!.s0 < L / 2).sort((a, b) => a.elev!.s0 - b.elev!.s0);
+    const right = cornerPosts.filter((m) => m.elev!.s0 >= L / 2).sort((a, b) => b.elev!.s0 - a.elev!.s0);
+    const mark = (group: typeof cornerPosts, tag: string) => {
+      if (!group.length) return;
+      const midS = (group[0].elev!.s0 + group[group.length - 1].elev!.s1) / 2;
+      const x = X(midS);
+      const y = Y(wallH * 0.72);
+      g += `<rect x="${svgN(x - 36)}" y="${svgN(y - 12)}" width="72" height="16" rx="3" fill="#fef3c7" stroke="#d97706" stroke-width="0.8"/>`;
+      g += `<text x="${svgN(x)}" y="${svgN(y)}" text-anchor="middle" dominant-baseline="middle" font-family="IBM Plex Sans,Manrope,sans-serif" font-size="8" fill="#92400e">${tag}</text>`;
+    };
+    mark(left, 'тёплый угол');
+    mark(right, 'тёплый угол');
+  }
+
   // Legend
   g += `<g font-family="IBM Plex Sans,Manrope,sans-serif" font-size="9" fill="#4b5563">
-    <text x="${marginL}" y="${svgH - 10}">СП 31-105 §7.2: нижняя обвязка · стойки · двойная верхняя обвязка · king/jack/header у проёмов · калифорнийский угол · примыкания перегородок</text>
+    <text x="${marginL}" y="${svgH - 10}">СП 31-105 §7.2: нижняя обвязка · стойки · двойная верхняя обвязка · king/jack/header у проёмов · калифорнийский тёплый угол (7.2.11) · примыкания перегородок (7.2.12)</text>
   </g>`;
 
   const title = `Стена ${wallIndex + 1} (${(L / 1000).toFixed(2)} м)`;
@@ -972,6 +961,7 @@ const PLAN_COLORS: Record<string, string> = {
   bottom_plate: '#1f3a2e',
   top_plate: '#14532d',
   stud: '#334155',
+  corner_stud: '#d97706',
   king_stud: '#0f766e',
   jack_stud: '#c45c26',
   header: '#b45309',
@@ -1017,10 +1007,11 @@ export function renderFrameProjections(
     <g font-family="IBM Plex Sans,Manrope,sans-serif" font-size="11">
       <text x="8" y="14" fill="#1f3a2e" font-weight="700">План каркаса · этаж ${floor + 1}</text>
       <rect x="8" y="22" width="10" height="10" fill="#334155"/><text x="22" y="31" fill="#334155">стойка</text>
-      <rect x="70" y="22" width="10" height="10" fill="#0f766e"/><text x="84" y="31" fill="#0f766e">king</text>
-      <rect x="120" y="22" width="10" height="10" fill="#c45c26"/><text x="134" y="31" fill="#c45c26">jack</text>
-      <rect x="175" y="22" width="10" height="10" fill="#b45309"/><text x="189" y="31" fill="#b45309">header</text>
-      <rect x="245" y="22" width="10" height="10" fill="#0369a1"/><text x="259" y="31" fill="#0369a1">балка</text>
+      <rect x="70" y="22" width="10" height="10" fill="#d97706"/><text x="84" y="31" fill="#d97706">угол</text>
+      <rect x="128" y="22" width="10" height="10" fill="#0f766e"/><text x="142" y="31" fill="#0f766e">king</text>
+      <rect x="188" y="22" width="10" height="10" fill="#c45c26"/><text x="202" y="31" fill="#c45c26">jack</text>
+      <rect x="243" y="22" width="10" height="10" fill="#b45309"/><text x="257" y="31" fill="#b45309">header</text>
+      <rect x="313" y="22" width="10" height="10" fill="#0369a1"/><text x="327" y="31" fill="#0369a1">балка</text>
     </g>`;
 
   let planBody = '';
@@ -1046,7 +1037,7 @@ export function renderFrameProjections(
     const dy = Math.sin(mark.angle + Math.PI / 2) * len;
     const x = toX(mark.x);
     const y = toY(mark.y);
-    const sw = m.kind === 'king_stud' ? 3.2 : m.kind === 'jack_stud' ? 2.8 : 2;
+    const sw = m.kind === 'king_stud' ? 3.2 : m.kind === 'jack_stud' ? 2.8 : m.kind === 'corner_stud' ? 3.4 : 2;
     planBody += `<line x1="${svgN(x - dx)}" y1="${svgN(y - dy)}" x2="${svgN(x + dx)}" y2="${svgN(y + dy)}" stroke="${PLAN_COLORS[m.kind] ?? '#334155'}" stroke-width="${sw}"/>`;
     planBody += `<circle cx="${svgN(x)}" cy="${svgN(y)}" r="2.2" fill="${PLAN_COLORS[m.kind] ?? '#334155'}"/>`;
   }

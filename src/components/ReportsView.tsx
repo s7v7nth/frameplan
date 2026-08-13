@@ -14,6 +14,7 @@ const KIND_RU: Record<string, string> = {
   bottom_plate: 'нижняя обвязка',
   top_plate: 'верхняя обвязка',
   stud: 'стойка',
+  corner_stud: 'угловая стойка',
   king_stud: 'королевская стойка',
   jack_stud: 'джек',
   header: 'перемычка',
@@ -120,7 +121,7 @@ export function ReportsView() {
           </section>
 
           <section className="card-plain wide">
-            <h3>Развёртки стен (узлы проёмов: king / jack / header / cripple)</h3>
+            <h3>Развёртки стен (проёмы: king / jack / header · калифорнийский тёплый угол СП 7.2.11)</h3>
             <div className="elev-gallery">
               {model.projections.wallElevations.map((w) => (
                 <div key={w.wallId} className="elev-item">

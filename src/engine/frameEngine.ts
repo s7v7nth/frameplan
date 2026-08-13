@@ -498,7 +498,7 @@ export function generateFrameModel(project: Project): FrameModel {
       .reduce((s, w) => s + wallLength(w), 0) / 1000;
   const wallLengthM = project.walls.reduce((s, w) => s + wallLength(w), 0) / 1000;
   const studCount = lumber
-    .filter((p) => ['stud', 'king_stud', 'jack_stud'].includes(p.category))
+    .filter((p) => ['stud', 'corner_stud', 'king_stud', 'jack_stud'].includes(p.category))
     .reduce((s, p) => s + p.qty, 0);
   const lumberVolumeM3 = lumber.reduce(
     (s, p) => s + volumeM3(p.sectionMm, p.lengthMm, p.qty),

@@ -8,6 +8,7 @@ import {
 import type { ExteriorCladding, FloorFinish, InteriorFinish, RoofType } from '../domain/types';
 import { useEditorStore } from '../store/editorStore';
 import { wallLength } from '../domain/geometry';
+import { MmField } from './MmField';
 
 export function SidePanel() {
   const {
@@ -425,11 +426,10 @@ export function SidePanel() {
           </p>
           <label className="field">
             <span>Толщина, мм</span>
-            <input
-              type="number"
+            <MmField
               value={selectedWall.thickness}
               onFocus={() => checkpoint()}
-              onChange={(e) => updateWall(selectedWall.id, { thickness: Number(e.target.value) })}
+              onCommit={(thickness) => updateWall(selectedWall.id, { thickness })}
             />
           </label>
           <label className="field">

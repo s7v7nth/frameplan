@@ -15,6 +15,7 @@ import {
 } from '../src/domain/geometry';
 import { generateFrameModel } from '../src/engine/frameEngine';
 import { headerHeightMm } from '../src/engine/frameGeometry';
+import { parseWallThicknessMm } from '../src/domain/numbers';
 import type { Project } from '../src/domain/types';
 
 const project: Project = {
@@ -125,6 +126,33 @@ const report = {
   partitionJunction: model.members.some(
     (m) => m.wallId === 'w1' && m.label.includes('примыкания перегородки'),
   ),
+  // California corners are a dedicated kind, visible on elevations
+  cornerStudKind: model.members.filter((m) => m.kind === 'corner_stud').length,
+  elevHasWarmCorner: model.projections.wallElevations.some(
+    (w) => w.svg.includes('тёплый угол') && w.svg.includes('СП 7.2.11'),
+  ),
+  // L-joint skip: no ordinary stud stacked on a California post
+  noStackedEndStuds: (() => {
+    const posts = model.members.filter(
+      (m) =>
+        m.elev &&
+        m.wallId &&
+        ['stud', 'corner_stud', 'king_stud', 'jack_stud'].includes(m.kind),
+    );
+    const byWall = new Map<string, number[]>();
+    for (const p of posts) {
+      const arr = byWall.get(p.wallId!) ?? [];
+      arr.push(p.elev!.s0);
+      byWall.set(p.wallId!, arr);
+    }
+    for (const xs of byWall.values()) {
+      const sorted = [...xs].sort((a, b) => a - b);
+      for (let i = 1; i < sorted.length; i++) {
+        if (sorted[i] - sorted[i - 1] < 40) return false;
+      }
+    }
+    return true;
+  })(),
   // Anchor note references SP 2.4 m
   anchorSpNote: model.bom.some((b) => b.note?.includes('2,4') && b.name.includes('Анкер')),
   elevHasDims: model.projections.wallElevations.some((w) => w.svg.includes('text-anchor="middle"')),
@@ -140,6 +168,9 @@ if (
   report.kings < 4 ||
   report.headers < 4 ||
   report.california < 8 ||
+  report.cornerStudKind < 8 ||
+  !report.elevHasWarmCorner ||
+  !report.noStackedEndStuds ||
   !report.stock6000 ||
   !report.hasBoardCuts ||
   report.bomStockLines < 1 ||
@@ -630,4 +661,34 @@ if (buttCalifornia < 12) {
   process.exit(1);
 }
 console.log('buttCornerNodes', { buttCalifornia });
+const buttCornerKind = buttCornerModel.members.filter((m) => m.kind === 'corner_stud').length;
+const buttElevWarm = buttCornerModel.projections.wallElevations.filter((w) =>
+  w.svg.includes('тёплый угол'),
+).length;
+if (buttCornerKind < 12 || buttElevWarm < 4) {
+  console.error('Butt-offset warm corners missing on elevations', { buttCornerKind, buttElevWarm });
+  process.exit(1);
+}
+console.log('buttWarmElev', { buttCornerKind, buttElevWarm });
+
+const thicknessParse = {
+  leading: parseWallThicknessMm('0150'),
+  leading200: parseWallThicknessMm('0200'),
+  zero: parseWallThicknessMm('0'),
+  empty: parseWallThicknessMm(''),
+  tooThin: parseWallThicknessMm('20'),
+  ok: parseWallThicknessMm('200'),
+};
+if (
+  thicknessParse.leading !== 150 ||
+  thicknessParse.leading200 !== 200 ||
+  thicknessParse.zero !== null ||
+  thicknessParse.empty !== null ||
+  thicknessParse.tooThin !== null ||
+  thicknessParse.ok !== 200
+) {
+  console.error('Wall thickness parse failed', thicknessParse);
+  process.exit(1);
+}
+console.log('thicknessParse', thicknessParse);
 

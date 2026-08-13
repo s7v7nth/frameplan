@@ -119,7 +119,7 @@ export interface Project {
   updatedAt: string;
 }
 
-/** Detected right-angle wall contact — input for later corner/joint generation. */
+/** Detected right-angle wall contact — drives California corners (L) and partition backing (T). */
 export type WallJointKind = 'L' | 'T';
 
 export interface WallJoint {
@@ -139,6 +139,7 @@ export interface LumberPiece {
     | 'bottom_plate'
     | 'top_plate'
     | 'stud'
+    | 'corner_stud'
     | 'jack_stud'
     | 'king_stud'
     | 'header'

@@ -114,7 +114,7 @@ function wallsPerpendicular(a: Wall, b: Wall): boolean {
 /**
  * Right-angle contacts between walls on a floor.
  * L = two tips meet; T = a tip sits on the other wall's span.
- * Used for canvas highlight and later corner/joint generation.
+ * Used for canvas highlight, California warm corners (L), and partition backing (T).
  */
 export function detectWallJoints(walls: Wall[], floor: FloorLevel): WallJoint[] {
   const floorWalls = walls.filter((w) => w.floor === floor);
