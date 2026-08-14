@@ -14,6 +14,10 @@
 
 Конфиг Cloud Agent: [`.cursor/environment.json`](.cursor/environment.json) (`npm ci` + dev-сервер).
 
+## Документы бизнеса
+
+Исследования, выводы и исполняемый список дел лежат в [`docs/`](docs/README.md). Источник правды по шагам: [`docs/TODO.md`](docs/TODO.md).
+
 ## Возможности
 
 - 2D-планировка: стены, окна, двери, мебель
